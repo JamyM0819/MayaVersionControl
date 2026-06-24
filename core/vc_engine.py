@@ -209,19 +209,31 @@ def git_commit(scenes_dir, file_path, version, message):
     tag = f"{base}_v{version:03d}"
     full_msg = f"{tag}: {message.strip()}"
 
+    cmds.warning(f"MayaVC [COMMIT 1]: scenes={scenes_dir}, fname={fname}, tag={tag}")
+
     # add
     out = _git(["add", fname], cwd=scenes_dir)
-    if not out and _git(["status", "--porcelain"], cwd=scenes_dir) == "":
-        return True  # nothing to commit, still ok
+    cmds.warning(f"MayaVC [COMMIT 2]: git add -> {repr(out)}")
+    st = _git(["status", "--porcelain"], cwd=scenes_dir)
+    cmds.warning(f"MayaVC [COMMIT 3]: git status -> {repr(st)}")
+    if not out and st == "":
+        cmds.warning("MayaVC [COMMIT 4]: nothing to commit, returning")
+        return True
 
     # commit
     r = _git(["commit", "-m", full_msg], cwd=scenes_dir)
+    cmds.warning(f"MayaVC [COMMIT 5]: git commit -> {repr(r)}")
     if r is None:
         cmds.warning("MayaVC: git commit failed")
         return False
 
     # tag
-    _git(["tag", "-f", tag], cwd=scenes_dir)
+    tag_r = _git(["tag", "-f", tag], cwd=scenes_dir)
+    cmds.warning(f"MayaVC [COMMIT 6]: git tag -> {repr(tag_r)}")
+
+    # verify
+    tags_after = _git(["tag", "-l"], cwd=scenes_dir)
+    cmds.warning(f"MayaVC [COMMIT 7]: tags after commit -> {repr(tags_after)}")
     return True
 
 

@@ -4,6 +4,7 @@ core/gitignore.py - .gitignore template writer
 
 GITIGNORE_TEMPLATE = """\
 # === Maya Version Control - Auto-generated ===
+test/
 
 # Maya temp files
 *.tmp
