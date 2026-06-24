@@ -191,4 +191,5 @@ def show():
     show._windows.append(win)
 
     win.show()
-    print("MayaVC: History window shown.")
+    import maya.cmds as _dbg
+    _dbg.warning("MayaVC: History window shown.")

@@ -248,7 +248,6 @@ def get_history(scenes_dir, scene_name=None):
                     If None/empty, show all versions across all scenes.
     """
     if not _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir):
-        print(f"MayaVC: not a git repo: {scenes_dir}")
         return []
 
     filter_base = (scene_name or "").lower()
@@ -256,9 +255,7 @@ def get_history(scenes_dir, scene_name=None):
     # list ALL tags sorted by creation date (newest first), then filter in Python.
     # Avoid git's glob pattern matching which has unreliable escaping on Windows.
     tag_list = _git(["tag", "-l", "--sort=-creatordate"], cwd=scenes_dir)
-    print(f"MayaVC: git tag -l raw output: {repr(tag_list)}")
     if not tag_list:
-        print("MayaVC: no tags found in repo")
         return []
 
     records = []
