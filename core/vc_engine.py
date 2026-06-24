@@ -361,14 +361,35 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Incremental save the CURRENT scene (with user's edits) to scenes/,
-        # then commit it, THEN open the historical version.
-        new_path = incremental_save(scenes_dir)
-        if new_path:
-            cur_base, _, cur_ver = _parse_ver(os.path.basename(new_path))
-            if cur_ver > 0:
-                git_commit(scenes_dir, new_path, cur_ver,
-                          f"Auto-save before loading {tag}")
+        # Determine whether to save in-place or create a new version.
+        # If the current scene lives in scenes_dir, save in-place so the
+        # user's edits stay on the current version (not a new number).
+        # If the current scene is a temp file (from a prior history load),
+        # or an unsaved scene, fall back to incremental save.
+        cur_path = cmds.file(q=True, sn=True)
+        cur_dir = os.path.dirname(os.path.abspath(cur_path)) if cur_path else ""
+
+        if cur_dir and os.path.normcase(os.path.normpath(cur_dir)) == \
+                        os.path.normcase(os.path.normpath(scenes_dir)):
+            # Save in-place: overwrite the current versioned file
+            _, cur_ext = os.path.splitext(cur_path)
+            ft = "mayaAscii" if cur_ext.lower() == ".ma" else "mayaBinary"
+            try:
+                cmds.file(save=True, type=ft, force=True)
+            except Exception as e:
+                cmds.warning(f"MayaVC: save failed - {e}")
+            else:
+                cur_base, _, cur_ver = _parse_ver(os.path.basename(cur_path))
+                if cur_ver > 0:
+                    git_commit(scenes_dir, cur_path, cur_ver,
+                              f"Auto-save before loading {tag}")
+        else:
+            new_path = incremental_save(scenes_dir)
+            if new_path:
+                cur_base, _, cur_ver = _parse_ver(os.path.basename(new_path))
+                if cur_ver > 0:
+                    git_commit(scenes_dir, new_path, cur_ver,
+                              f"Auto-save before loading {tag}")
 
     # Read file content — use raw binary for .mb to avoid UTF-8 round-trip corruption
     if is_binary:
