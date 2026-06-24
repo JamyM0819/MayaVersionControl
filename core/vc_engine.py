@@ -361,10 +361,14 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Use incremental save to ensure work goes to scenes/, not a temp file
-        # (cmds.file(save=True) would save to the current temp file if a
-        # historical version was loaded previously)
-        incremental_save(scenes_dir)
+        # Incremental save the CURRENT scene (with user's edits) to scenes/,
+        # then commit it, THEN open the historical version.
+        new_path = incremental_save(scenes_dir)
+        if new_path:
+            cur_base, _, cur_ver = _parse_ver(os.path.basename(new_path))
+            if cur_ver > 0:
+                git_commit(scenes_dir, new_path, cur_ver,
+                          f"Auto-save before loading {tag}")
 
     # Read file content — use raw binary for .mb to avoid UTF-8 round-trip corruption
     if is_binary:
