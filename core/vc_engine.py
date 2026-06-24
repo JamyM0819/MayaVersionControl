@@ -157,12 +157,13 @@ def git_commit(scenes_dir, file_path, version, message):
 # ---------------------------------------------------------------------------
 
 class VersionRecord:
-    __slots__ = ("tag", "date", "message", "file")
-    def __init__(self, tag, date, message, file=""):
+    __slots__ = ("tag", "date", "message", "file", "hash")
+    def __init__(self, tag, date, message, file="", hash=""):
         self.tag = tag
         self.date = date
         self.message = message
         self.file = file        # basename of the scene file stored in this tag
+        self.hash = hash        # short commit hash (7 chars)
 
 
 def get_history(scenes_dir, scene_name=None):
@@ -194,18 +195,23 @@ def get_history(scenes_dir, scene_name=None):
         tag = tag.strip()
         if not tag:
             continue
-        # one-shot: grab date + subject + filenames for this tag
-        info = _git(["log", "-1", "--format=%ai|%s", "--name-only", tag, "--"],
+        # one-shot: grab hash + date + subject + filenames for this tag
+        # format: "<hash>|<date>|<subject>" then file list after newline
+        info = _git(["log", "-1", "--format=%h|%ai|%s", "--name-only", tag, "--"],
                     cwd=scenes_dir)
         date_str = ""
         msg = ""
+        commit_hash = ""
         tag_file = ""
         if info and "|" in info:
-            # first line: "2024-01-15 14:30:00 +0800|v003: update skin weights"
+            # first line: "a1b2c3d|2024-01-15 14:30:00 +0800|v003: update skin weights"
             # following lines: filenames (one per line)
             lines = info.split("\n")
-            if "|" in lines[0]:
-                date_raw, msg = lines[0].split("|", 1)
+            parts = lines[0].split("|", 2)
+            if len(parts) >= 3:
+                commit_hash = parts[0][:7]
+                date_raw = parts[1]
+                msg = parts[2]
                 try:
                     dt = datetime.datetime.strptime(date_raw[:19], "%Y-%m-%d %H:%M:%S")
                     date_str = dt.strftime("%Y-%m-%d %H:%M")
@@ -224,10 +230,19 @@ def get_history(scenes_dir, scene_name=None):
                 continue
 
         records.append(VersionRecord(
-            tag=tag, date=date_str, message=msg.strip(), file=tag_file,
+            tag=tag, date=date_str, message=msg.strip(), file=tag_file, hash=commit_hash,
         ))
 
     return records
+
+
+def get_current_info(scenes_dir, scene_name):
+    """Return (version, hash) for the current scene's latest tag, or (None, None)."""
+    records = get_history(scenes_dir, scene_name)
+    if not records:
+        return None, None
+    r = records[0]
+    return r.tag, r.hash
 
 
 def load_version(scenes_dir, tag):

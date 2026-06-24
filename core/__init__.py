@@ -6,6 +6,7 @@ from core.vc_engine import (
     incremental_save,
     git_commit,
     get_history,
+    get_current_info,
     load_version,
     _parse_ver,
 )

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from core.vc_engine import get_scenes_dir, get_history, load_version, _parse_ver
+from core.vc_engine import get_scenes_dir, get_history, get_current_info, load_version, _parse_ver
 
 
 def _get_maya_window():
@@ -43,47 +43,32 @@ def _is_alive(widget):
         return False
 
 
-def _remove_from_stash(win):
-    """Remove a destroyed window from the stash so gc can clean it up."""
-    if not hasattr(show, "_windows"):
-        return
-    try:
-        show._windows.remove(win)
-    except ValueError:
-        pass
-
-
 def show():
     """Show the history browser. Reuses existing window if open."""
-    # Check if window is still alive (not destroyed by Maya)
     mw = _get_maya_window()
     if mw is None:
         return
 
-    # Clean up dead wrappers from the stash first
-    if hasattr(show, "_windows"):
-        show._windows = [w for w in show._windows if _is_alive(w)]
-
-    # Reuse an existing living window
+    # Try reusing a living window from the stash
     if hasattr(show, "_windows"):
         for w in show._windows:
-            try:
-                if w.objectName() == "MayaVCHistoryWidget":
-                    w.show()
-                    w.raise_()
-                    w.activateWindow()
-                    return
-            except Exception:
-                continue
+            if _is_alive(w):
+                w.show()
+                w.raise_()
+                w.activateWindow()
+                # Refresh data since it may have changed since last open
+                try:
+                    w._do_refresh()
+                except Exception:
+                    pass
+                return
 
+    # ---- create new window ----
     win = QWidget(mw, Qt.Window)
     win.setObjectName("MayaVCHistoryWidget")
-    win.setAttribute(Qt.WA_DeleteOnClose)      # destroy C++ object on close
     win.setWindowTitle("Maya Version History")
     win.resize(900, 550)
     win.setMinimumSize(600, 350)
-    # On close, remove from stash so we don't hold a dangling wrapper
-    win.destroyed.connect(lambda obj=None: _remove_from_stash(win))
 
     lay = QVBoxLayout(win)
     lay.setContentsMargins(6, 6, 6, 6)
@@ -92,8 +77,13 @@ def show():
     label = QLabel("Project: (click Refresh)")
     lay.addWidget(label)
 
-    table = QTableWidget(0, 3)
-    table.setHorizontalHeaderLabels(["Version", "Date", "Message"])
+    # current version info line
+    info_label = QLabel("")
+    info_label.setStyleSheet("font-size: 11px; color: #888;")
+    lay.addWidget(info_label)
+
+    table = QTableWidget(0, 4)
+    table.setHorizontalHeaderLabels(["Version", "Hash", "Date", "Message"])
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -103,7 +93,8 @@ def show():
     h.setStretchLastSection(True)
     h.setSectionResizeMode(0, QHeaderView.ResizeToContents)
     h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-    h.setSectionResizeMode(2, QHeaderView.Stretch)
+    h.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    h.setSectionResizeMode(3, QHeaderView.Stretch)
     lay.addWidget(table, stretch=1)
 
     blay = QHBoxLayout()
@@ -126,6 +117,7 @@ def show():
         state["scenes_dir"] = ""
         table.setRowCount(0)
         label.setText("Loading...")
+        info_label.setText("")
         try:
             d = get_scenes_dir()
         except Exception:
@@ -149,6 +141,17 @@ def show():
                 f"Project: {os.path.basename(d) or d}{suffix}"
                 f"  ({len(state['records'])} versions)"
             )
+
+            # current version + hash
+            cur_ver, cur_hash = get_current_info(d, scene_name)
+            if cur_ver and cur_hash:
+                info_label.setText(
+                    f"Current: {cur_ver}  |  commit: {cur_hash}"
+                )
+            elif cur_ver:
+                info_label.setText(f"Current: {cur_ver}")
+            else:
+                info_label.setText("")
         except Exception as e:
             label.setText(f"Error: {e}")
 
@@ -157,8 +160,11 @@ def show():
             tag = QTableWidgetItem(r.tag or "-")
             tag.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag)
-            table.setItem(i, 1, QTableWidgetItem(r.date or ""))
-            table.setItem(i, 2, QTableWidgetItem(r.message or ""))
+            hash_item = QTableWidgetItem(r.hash or "")
+            hash_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(i, 1, hash_item)
+            table.setItem(i, 2, QTableWidgetItem(r.date or ""))
+            table.setItem(i, 3, QTableWidgetItem(r.message or ""))
 
     def on_sel():
         rows = {idx.row() for idx in table.selectedIndexes()}
@@ -184,6 +190,8 @@ def show():
     folder_btn.clicked.connect(on_folder)
 
     do_refresh()
+    # attach refresh method so reusers can refresh stale data
+    win._do_refresh = do_refresh
     # stash reference so gc doesn't eat the window
     if not hasattr(show, "_windows"):
         show._windows = []
