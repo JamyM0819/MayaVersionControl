@@ -21,7 +21,12 @@ else:
 
 
 def _git(args, cwd, binary=False):
-    """Run git, return stdout, or '' on failure."""
+    """Run git, return stdout on success, None on failure.
+
+    IMPORTANT: Returns None on failure (not empty string), so callers can
+    distinguish between "git add succeeded with no output" and "git failed".
+    When checking for failure, use `if _git(...) is None`.
+    """
     kwargs = dict(_SUB_KWARGS)
     if binary:
         kwargs.pop("text", None)
@@ -29,11 +34,13 @@ def _git(args, cwd, binary=False):
         kwargs.pop("errors", None)
     try:
         r = subprocess.run(["git"] + args, cwd=cwd, **kwargs)
+        if r.returncode != 0:
+            return None
         if binary:
             return r.stdout or b""
         return (r.stdout or "").strip()
     except Exception:
-        return b"" if binary else ""
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +230,7 @@ def git_commit(scenes_dir, file_path, version, message):
     # commit
     r = _git(["commit", "-m", full_msg], cwd=scenes_dir)
     cmds.warning(f"MayaVC [COMMIT 5]: git commit -> {repr(r)}")
-    if r is None:
+    if not r and r != "":
         cmds.warning("MayaVC: git commit failed")
         return False
 
@@ -326,6 +333,9 @@ def load_version(scenes_dir, tag):
     """Checkout scene file at tag into temp file and open in Maya."""
     # find the .ma/.mb file
     files = _git(["ls-tree", "-r", "--name-only", tag], cwd=scenes_dir)
+    if files is None:
+        cmds.warning(f"MayaVC: tag {tag} not found")
+        return False
     scene_files = [f for f in files.split("\n") if f.lower().endswith((".ma", ".mb"))]
     if not scene_files:
         cmds.warning(f"MayaVC: no .ma/.mb in tag {tag}")
