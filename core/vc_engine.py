@@ -361,21 +361,23 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Determine whether to save in-place or create a new version.
-        # If the current scene lives in scenes_dir, save in-place so the
-        # user's edits stay on the current version (not a new number).
-        # If the current scene is a temp file (from a prior history load),
-        # or an unsaved scene, fall back to incremental save.
+        # Save in-place (overwrite current file) when the scene is a real
+        # project file.  Only fall back to incremental-save-as-new-version
+        # when the scene is a temp copy from a previous history load, or
+        # when the scene has never been saved.
         cur_path = cmds.file(q=True, sn=True)
         cur_dir = os.path.dirname(os.path.abspath(cur_path)) if cur_path else ""
+        is_temp = _is_temp_dir(cur_dir) if cur_dir else True
 
-        if cur_dir and os.path.normcase(os.path.normpath(cur_dir)) == \
-                        os.path.normcase(os.path.normpath(scenes_dir)):
+        if cur_path and not is_temp:
             # Save in-place: overwrite the current versioned file
             _, cur_ext = os.path.splitext(cur_path)
             ft = "mayaAscii" if cur_ext.lower() == ".ma" else "mayaBinary"
             try:
                 cmds.file(save=True, type=ft, force=True)
+                cmds.warning(
+                    f"MayaVC: saved in-place "
+                    f"{os.path.basename(cur_path)}")
             except Exception as e:
                 cmds.warning(f"MayaVC: save failed - {e}")
             else:
@@ -390,6 +392,9 @@ def load_version(scenes_dir, tag):
                 if cur_ver > 0:
                     git_commit(scenes_dir, new_path, cur_ver,
                               f"Auto-save before loading {tag}")
+                cmds.warning(
+                    f"MayaVC: saved as new version "
+                    f"{os.path.basename(new_path)}")
 
     # Read file content — use raw binary for .mb to avoid UTF-8 round-trip corruption
     if is_binary:
