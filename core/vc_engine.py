@@ -225,12 +225,9 @@ def git_commit(scenes_dir, file_path, version, message):
     if out is None:
         cmds.warning("MayaVC: git add failed")
         return False
-    st = _git(["status", "--porcelain"], cwd=scenes_dir)
-    if st == "":
-        return True  # nothing to commit, still ok
 
-    # commit
-    r = _git(["commit", "-m", full_msg], cwd=scenes_dir)
+    # commit (allow-empty so the tag always gets force-updated)
+    r = _git(["commit", "--allow-empty", "-m", full_msg], cwd=scenes_dir)
     if r is None:
         cmds.warning("MayaVC: git commit failed")
         return False
