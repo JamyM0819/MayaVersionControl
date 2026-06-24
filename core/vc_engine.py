@@ -252,13 +252,9 @@ def get_history(scenes_dir, scene_name=None):
 
     filter_base = (scene_name or "").lower()
 
-    # list tags sorted by creation date (newest first)
-    # Tags now use format: {base}_vNNN (e.g. hero_v001, prop_sword_v001)
-    tag_pattern = "*_v[0-9][0-9][0-9]*"
-    if filter_base:
-        tag_pattern = f"{filter_base}_v[0-9][0-9][0-9]*"
-    tag_list = _git(["tag", "-l", tag_pattern, "--sort=-creatordate"],
-                    cwd=scenes_dir)
+    # list ALL tags sorted by creation date (newest first), then filter in Python.
+    # Avoid git's glob pattern matching which has unreliable escaping on Windows.
+    tag_list = _git(["tag", "-l", "--sort=-creatordate"], cwd=scenes_dir)
     if not tag_list:
         return []
 
@@ -266,6 +262,13 @@ def get_history(scenes_dir, scene_name=None):
     for tag in tag_list.split("\n"):
         tag = tag.strip()
         if not tag:
+            continue
+        # Only accept tags matching {base}_vNNN format, skip old-style vNNN tags
+        # Tags lack the file extension, so parse manually instead of using _VER_RE
+        tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
+        if not tag_ver:
+            continue
+        if filter_base and tag_ver.group(1).lower() != filter_base:
             continue
         # one-shot: grab hash + date + subject + filenames for this tag
         # format: "<hash>|<date>|<subject>" then file list after newline
@@ -294,12 +297,6 @@ def get_history(scenes_dir, scene_name=None):
                 if ln.lower().endswith((".ma", ".mb")):
                     tag_file = ln.strip()
                     break
-
-        # filter by scene base name
-        if filter_base:
-            base, _, _ = _parse_ver(tag_file)
-            if base.lower() != filter_base:
-                continue
 
         records.append(VersionRecord(
             tag=tag, date=date_str, message=msg.strip(), file=tag_file, hash=commit_hash,
