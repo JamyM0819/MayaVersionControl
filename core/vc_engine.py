@@ -389,20 +389,36 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Save the CURRENT scene in-place before opening the historical
-        # version.  Use the same rename+save pattern as incremental_save
-        # to guarantee Maya flushes to disk.  We do NOT git-commit here.
+        # Force-save the current scene in-place.  Do NOT use
+        # cmds.file(rename=...) — when the rename path is the same as
+        # the current file, Maya may silently reload from disk (wiping
+        # in-memory edits) before saving, which results in a stale file.
         cur_path = cmds.file(q=True, sn=True)
         if cur_path:
-            _, cur_ext = os.path.splitext(cur_path)
-            ft = "mayaAscii" if cur_ext.lower() == ".ma" else "mayaBinary"
+            pre_mtime = 0
             try:
-                # Ensure Maya targets the scenes directory (not a temp copy)
-                cmds.file(rename=cur_path)
-                cmds.file(save=True, type=ft, force=True)
-                cmds.warning(
-                    f"MayaVC: saved in-place "
-                    f"{os.path.basename(cur_path)}")
+                if os.path.isfile(cur_path):
+                    pre_mtime = int(os.path.getmtime(cur_path))
+            except Exception:
+                pass
+            try:
+                cmds.file(save=True, force=True)
+                # Verify the save actually touched the file on disk
+                if os.path.isfile(cur_path):
+                    post_mtime = int(os.path.getmtime(cur_path))
+                    if post_mtime != pre_mtime:
+                        cmds.warning(
+                            f"MayaVC: saved in-place "
+                            f"{os.path.basename(cur_path)}")
+                    else:
+                        cmds.warning(
+                            f"MayaVC: save may have failed — "
+                            f"file mtime unchanged "
+                            f"{os.path.basename(cur_path)}")
+                else:
+                    cmds.warning(
+                        f"MayaVC: saved in-place "
+                        f"{os.path.basename(cur_path)}")
             except Exception as e:
                 cmds.warning(f"MayaVC: save failed - {e}")
 
