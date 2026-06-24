@@ -361,7 +361,10 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        cmds.file(save=True, force=True)
+        # Use incremental save to ensure work goes to scenes/, not a temp file
+        # (cmds.file(save=True) would save to the current temp file if a
+        # historical version was loaded previously)
+        incremental_save(scenes_dir)
 
     # Read file content — use raw binary for .mb to avoid UTF-8 round-trip corruption
     if is_binary:
