@@ -20,13 +20,20 @@ else:
                        encoding="utf-8", errors="replace")
 
 
-def _git(args, cwd):
+def _git(args, cwd, binary=False):
     """Run git, return stdout, or '' on failure."""
+    kwargs = dict(_SUB_KWARGS)
+    if binary:
+        kwargs.pop("text", None)
+        kwargs.pop("encoding", None)
+        kwargs.pop("errors", None)
     try:
-        r = subprocess.run(["git"] + args, cwd=cwd, **_SUB_KWARGS)
+        r = subprocess.run(["git"] + args, cwd=cwd, **kwargs)
+        if binary:
+            return r.stdout or b""
         return (r.stdout or "").strip()
     except Exception:
-        return ""
+        return b"" if binary else ""
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +95,26 @@ def _parse_ver(filename):
     return root, ext.lstrip("."), 0
 
 
-def detect_next_version(scenes_dir):
-    """Return (base, ext, next_ver) for the current scene."""
+def detect_next_version(scenes_dir, base=None):
+    """Return (base, ext, next_ver).
+
+    If *base* is given, scan for that base name.
+    Otherwise derive the base name from the currently open scene file.
+    """
     p = cmds.file(q=True, sn=True)
-    if not p:
-        return ("untitled", "ma", 1)
-    base, ext, cur = _parse_ver(p)
-    max_ver = cur
+    if p:
+        _, ext = os.path.splitext(p)
+        ext = ext.lstrip(".")
+    else:
+        ext = "ma"
+
+    if base is None:
+        if p:
+            base = _parse_ver(p)[0]
+        else:
+            base = "untitled"
+
+    max_ver = 0
     try:
         for f in os.listdir(scenes_dir):
             if not f.lower().endswith((".ma", ".mb")):

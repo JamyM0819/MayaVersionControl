@@ -43,10 +43,26 @@ def show():
                 pass
         show._windows.clear()
 
-    # ---- create new window ----
+    # Scenes dir — try cached first, then detect from Maya
+    d = getattr(show, "_last_scenes_dir", "") or ""
+    if not d or not os.path.isdir(d):
+        try:
+            d = get_scenes_dir()
+        except Exception:
+            d = os.getcwd()
+    show._last_scenes_dir = d
+
+    # Repo hash for title
+    repo_hash = ""
+    if d and os.path.isdir(d):
+        h = _git(["rev-parse", "HEAD"], cwd=d)
+        if h and "fatal" not in h:
+            repo_hash = f"  [{h[:12]}]"
+
+    # ---- window ----
     win = QWidget(mw, Qt.Window)
     win.setObjectName("MayaVCHistoryWidget")
-    win.setWindowTitle("Maya Version History")
+    win.setWindowTitle(f"Maya Version History{repo_hash}")
     win.resize(900, 550)
     win.setMinimumSize(600, 350)
 
@@ -57,7 +73,6 @@ def show():
     label = QLabel("Project: (click Refresh)")
     lay.addWidget(label)
 
-    # current version info line
     info_label = QLabel("")
     info_label.setStyleSheet("font-size: 11px; color: #888;")
     lay.addWidget(info_label)
@@ -69,12 +84,12 @@ def show():
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.setAlternatingRowColors(True)
     table.verticalHeader().setVisible(False)
-    h = table.horizontalHeader()
-    h.setStretchLastSection(True)
-    h.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-    h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-    h.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-    h.setSectionResizeMode(3, QHeaderView.Stretch)
+    hdr = table.horizontalHeader()
+    hdr.setStretchLastSection(True)
+    hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+    hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+    hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    hdr.setSectionResizeMode(3, QHeaderView.Stretch)
     lay.addWidget(table, stretch=1)
 
     blay = QHBoxLayout()
@@ -90,15 +105,6 @@ def show():
     lay.addLayout(blay)
 
     # ---- state ----
-    # Try stored scenes_dir first (survives historical-version opens that
-    # change Maya's current file path to a temp directory).
-    d = getattr(show, "_last_scenes_dir", "") or ""
-    if not d or not os.path.isdir(d):
-        try:
-            d = get_scenes_dir()
-        except Exception:
-            d = os.getcwd()
-    show._last_scenes_dir = d
     state = {"records": [], "scenes_dir": d}
 
     def do_refresh():
@@ -147,9 +153,9 @@ def show():
 
         table.setRowCount(len(state["records"]))
         for i, r in enumerate(state["records"]):
-            tag = QTableWidgetItem(r.tag or "-")
-            tag.setTextAlignment(Qt.AlignCenter)
-            table.setItem(i, 0, tag)
+            tag_item = QTableWidgetItem(r.tag or "-")
+            tag_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(i, 0, tag_item)
             hash_item = QTableWidgetItem(r.hash or "")
             hash_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 1, hash_item)
@@ -171,9 +177,9 @@ def show():
             do_refresh()
 
     def on_folder():
-        d = state["scenes_dir"]
-        if d and os.path.isdir(d):
-            os.startfile(d)
+        sd = state["scenes_dir"]
+        if sd and os.path.isdir(sd):
+            os.startfile(sd)
 
     refresh_btn.clicked.connect(do_refresh)
     table.itemSelectionChanged.connect(on_sel)
@@ -181,7 +187,7 @@ def show():
     folder_btn.clicked.connect(on_folder)
 
     do_refresh()
-    # stash reference
+    # stash reference so gc doesn't eat the window
     if not hasattr(show, "_windows"):
         show._windows = []
     show._windows.append(win)

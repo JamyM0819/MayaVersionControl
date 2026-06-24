@@ -11,7 +11,7 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PACKAGE_DIR not in sys.path:
     sys.path.insert(0, _PACKAGE_DIR)
 
-from core.vc_engine import get_scenes_dir, dry_run_next_version, incremental_save, git_commit
+from core.vc_engine import get_scenes_dir, dry_run_next_version, git_commit
 from core.gitignore import write_gitignore
 from ui.commit_dialog import show_commit_dialog
 
@@ -28,9 +28,10 @@ def incremental_save_and_commit():
         return
 
     # 1. Preview next version (does NOT save / create anything yet)
-    base, ext, next_ver, preview_path = dry_run_next_version(scenes_dir)
+    base, ext, next_ver, _ = dry_run_next_version(scenes_dir)
 
-    # 2. Commit dialog (shows the preview version)
+    # 2. Commit dialog with editable base name + live version preview.
+    #    Returns the final base name, version, message.
     parent = None
     try:
         from shiboken6 import wrapInstance
@@ -42,18 +43,16 @@ def incremental_save_and_commit():
     except Exception:
         pass
 
-    preview_name = os.path.basename(preview_path)
-    msg, ok = show_commit_dialog(preview_name, parent=parent)
+    new_base, new_ver, msg, ok = show_commit_dialog(
+        base, next_ver, ext, parent=parent, scenes_dir=scenes_dir,
+    )
     if not ok:
         cmds.warning("MayaVC: Commit cancelled — nothing saved.")
         return
 
-    # 3. Commit confirmed — save-as new versioned file now.
-    new_path = os.path.join(scenes_dir, f"{base}_v{next_ver:03d}.{ext}")
+    # 3. Save-as to new versioned file
+    new_path = os.path.join(scenes_dir, f"{new_base}_v{new_ver:03d}.{ext}")
     ft = "mayaAscii" if ext == "ma" else "mayaBinary"
-    # Save the current scene directly to the new versioned path (save-as),
-    # without calling rename first. This preserves the user's original
-    # working file untouched.
     try:
         cmds.file(rename=new_path)
         cmds.file(save=True, type=ft)
@@ -62,11 +61,10 @@ def incremental_save_and_commit():
         return
 
     # 4. Git commit + tag
-    if git_commit(scenes_dir, new_path, next_ver, msg):
-        cmds.warning(f"MayaVC: v{next_ver:03d} committed - {msg}")
+    if git_commit(scenes_dir, new_path, new_ver, msg):
+        cmds.warning(f"MayaVC: v{new_ver:03d} committed - {msg}")
     else:
         cmds.warning("MayaVC: Commit failed.")
-        # File was saved even if git failed — warn but don't lose work
 
 
 def show_history():

@@ -3,32 +3,66 @@ ui/commit_dialog.py - Commit message dialog
 
 Usage:
   from ui.commit_dialog import show_commit_dialog
-  msg, ok = show_commit_dialog("myProject_v004.ma", parent=maya_main_window)
+  base, msg, ok = show_commit_dialog("hero", 6, "ma", parent=maya_main_window)
 """
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QTextEdit, QPushButton,
+    QTextEdit, QPushButton, QLineEdit,
 )
 from PySide6.QtCore import Qt, Signal
 
+from core.vc_engine import detect_next_version
+
 
 class CommitDialog(QDialog):
-    """Collect commit message from user after incremental save."""
+    """Collect commit message and optional base-name from user."""
 
     submitted = Signal(str)
 
-    def __init__(self, filename: str, parent=None):
+    def __init__(self, base_name: str, next_ver: int, ext: str,
+                 parent=None, scenes_dir: str = ""):
         super().__init__(parent)
-        self._filename = filename
-        self.setWindowTitle("Incremental Save - Commit Message")
-        self.setMinimumSize(480, 200)
+        self._base_name = base_name
+        self._ext = ext
+        self._scenes_dir = scenes_dir
+
+        # Get repo-wide hash for the title
+        repo_hash = ""
+        if scenes_dir:
+            from core.vc_engine import _git
+            h = _git(["rev-parse", "HEAD"], cwd=scenes_dir)
+            if h and "fatal" not in h:
+                repo_hash = h[:12]
+
+        title = "Incremental Save" if not repo_hash else f"Incremental Save  [{repo_hash}]"
+        self.setWindowTitle(title)
+        self.setMinimumSize(500, 260)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        layout.addWidget(QLabel(f"Scene:  {self._filename}"))
+        # Base name row with live version preview
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("File name:"))
+        self.name_edit = QLineEdit(base_name)
+        self.name_edit.setPlaceholderText("e.g. hero, prop_sword, character_rig")
+        name_layout.addWidget(self.name_edit, stretch=1)
+        self.name_suffix = QLabel(f"_v{next_ver:03d}.{ext}")
+        name_layout.addWidget(self.name_suffix)
+        layout.addLayout(name_layout)
+
+        def on_name_changed(text):
+            base = text.strip() or self._base_name
+            if self._scenes_dir:
+                _, _, v = detect_next_version(self._scenes_dir, base)
+            else:
+                v = next_ver
+            self.name_suffix.setText(f"_v{v:03d}.{ext}")
+
+        self.name_edit.textChanged.connect(on_name_changed)
+
         layout.addWidget(QLabel("Description (required):"))
 
         self.text_edit = QTextEdit()
@@ -69,12 +103,28 @@ class CommitDialog(QDialog):
         else:
             super().keyPressEvent(event)
 
+    def get_base_name(self) -> str:
+        """Return the (sanitized) user-chosen base name."""
+        name = self.name_edit.text().strip()
+        return name if name else self._base_name
+
+    def get_next_version(self) -> int:
+        """Return the version number shown in the suffix right now."""
+        suffix = self.name_suffix.text()  # e.g. "_v003.ma"
+        try:
+            return int(suffix.split("_v")[1].split(".")[0])
+        except Exception:
+            return 1
+
     def get_message(self) -> str:
         return self.text_edit.toPlainText().strip()
 
 
-def show_commit_dialog(filename: str, parent=None) -> tuple:
-    """Show commit dialog, return (message, ok)."""
-    dlg = CommitDialog(filename, parent)
+def show_commit_dialog(base: str, next_ver: int, ext: str,
+                       parent=None, scenes_dir: str = "") -> tuple:
+    """Show commit dialog, return (base_name, version, message, ok)."""
+    dlg = CommitDialog(base, next_ver, ext, parent=parent, scenes_dir=scenes_dir)
     result = dlg.exec()
-    return dlg.get_message(), (result == QDialog.Accepted)
+    if result != QDialog.Accepted:
+        return base, next_ver, "", False
+    return dlg.get_base_name(), dlg.get_next_version(), dlg.get_message(), True
