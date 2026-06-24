@@ -44,5 +44,4 @@ dist/
 *.egg-info/
 
 # Test files (keep test structure but ignore generated content)
-test/*/scenes/
-test/*/workspace.mel
+test/
