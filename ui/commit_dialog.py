@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from core.vc_engine import detect_next_version
+from core.vc_engine import detect_next_version, get_plugin_repo_hash
 
 
 class CommitDialog(QDialog):
@@ -27,13 +27,8 @@ class CommitDialog(QDialog):
         self._ext = ext
         self._scenes_dir = scenes_dir
 
-        # Get repo-wide hash for the title
-        repo_hash = ""
-        if scenes_dir:
-            from core.vc_engine import _git
-            h = _git(["rev-parse", "HEAD"], cwd=scenes_dir)
-            if h and "fatal" not in h:
-                repo_hash = h[:12]
+        # Get plugin repo hash for the title (not Maya project's)
+        repo_hash = get_plugin_repo_hash() or ""
 
         title = "Incremental Save" if not repo_hash else f"Incremental Save  [{repo_hash}]"
         self.setWindowTitle(title)
@@ -58,8 +53,8 @@ class CommitDialog(QDialog):
             if self._scenes_dir:
                 _, _, v = detect_next_version(self._scenes_dir, base)
             else:
-                v = next_ver
-            self.name_suffix.setText(f"_v{v:03d}.{ext}")
+                v = 1
+            self.name_suffix.setText(f"_v{v:03d}.{self._ext}")
 
         self.name_edit.textChanged.connect(on_name_changed)
 

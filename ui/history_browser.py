@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from core.vc_engine import get_scenes_dir, get_history, load_version, _parse_ver, _git
+from core.vc_engine import get_scenes_dir, get_history, load_version, _parse_ver, _git, get_plugin_repo_hash
 
 
 def _get_maya_window():
@@ -52,12 +52,10 @@ def show():
             d = os.getcwd()
     show._last_scenes_dir = d
 
-    # Repo hash for title
-    repo_hash = ""
-    if d and os.path.isdir(d):
-        h = _git(["rev-parse", "HEAD"], cwd=d)
-        if h and "fatal" not in h:
-            repo_hash = f"  [{h[:12]}]"
+    # Repo hash for title — use plugin's own hash, not Maya project's
+    repo_hash = get_plugin_repo_hash() or ""
+    if repo_hash:
+        repo_hash = f"  [{repo_hash}]"
 
     # ---- window ----
     win = QWidget(mw, Qt.Window)
@@ -139,7 +137,7 @@ def show():
                 if p:
                     cur_base, cur_ext, cur_ver = _parse_ver(p)
                     if cur_ver > 0:
-                        cur_tag = f"v{cur_ver:03d}"
+                        cur_tag = f"{cur_base}_v{cur_ver:03d}"
                         cur_hash = _git(["log", "-1", "--format=%h", cur_tag, "--"], cwd=d) or ""
                         info_label.setText(
                             f"Current: {cur_tag}  |  commit: {cur_hash or '---'}"

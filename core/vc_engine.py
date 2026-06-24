@@ -79,6 +79,25 @@ def _is_temp_dir(d):
     return False
 
 
+def get_plugin_repo_hash():
+    """Return short hash (12 chars) of the MayaVC plugin's own git repo.
+
+    Used for window titles to identify which version of the tool is running.
+    Returns empty string if the plugin isn't in a git repo.
+    """
+    import sys
+    # Locate package root via sys.path — the dir that contains shelf_main.py
+    for p in sys.path:
+        try:
+            if os.path.isdir(p) and os.path.isfile(os.path.join(p, "shelf_main.py")):
+                h = _git(["rev-parse", "HEAD"], cwd=p)
+                if h and "fatal" not in h:
+                    return h[:7]
+        except Exception:
+            pass
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Version number
 # ---------------------------------------------------------------------------
@@ -98,8 +117,9 @@ def _parse_ver(filename):
 def detect_next_version(scenes_dir, base=None):
     """Return (base, ext, next_ver).
 
-    If *base* is given, scan for that base name.
-    Otherwise derive the base name from the currently open scene file.
+    If *base* is given and differs from the currently-open scene's base
+    name, scanning starts from 1 (new naming branch).
+    Otherwise the next sequential version for the current base is returned.
     """
     p = cmds.file(q=True, sn=True)
     if p:
@@ -108,12 +128,13 @@ def detect_next_version(scenes_dir, base=None):
     else:
         ext = "ma"
 
-    if base is None:
-        if p:
-            base = _parse_ver(p)[0]
-        else:
-            base = "untitled"
+    current_base = _parse_ver(p)[0] if p else ""
 
+    if base is None:
+        base = current_base or "untitled"
+
+    # Always scan the given base from scratch; if the user chose a different
+    # name, the loop naturally finds nothing and returns 1.
     max_ver = 0
     try:
         for f in os.listdir(scenes_dir):
@@ -179,7 +200,8 @@ def git_commit(scenes_dir, file_path, version, message):
     """git add + commit + tag.  Returns True on success."""
     _ensure_git(scenes_dir)
     fname = os.path.basename(file_path)
-    tag = f"v{version:03d}"
+    base, _, _ = _parse_ver(fname)
+    tag = f"{base}_v{version:03d}"
     full_msg = f"{tag}: {message.strip()}"
 
     # add
@@ -228,13 +250,17 @@ def get_history(scenes_dir, scene_name=None):
     if not _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir):
         return []
 
+    filter_base = (scene_name or "").lower()
+
     # list tags sorted by creation date (newest first)
-    tag_list = _git(["tag", "-l", "v[0-9][0-9][0-9]*", "--sort=-creatordate"],
+    # Tags now use format: {base}_vNNN (e.g. hero_v001, prop_sword_v001)
+    tag_pattern = "*_v[0-9][0-9][0-9]*"
+    if filter_base:
+        tag_pattern = f"{filter_base}_v[0-9][0-9][0-9]*"
+    tag_list = _git(["tag", "-l", tag_pattern, "--sort=-creatordate"],
                     cwd=scenes_dir)
     if not tag_list:
         return []
-
-    filter_base = (scene_name or "").lower()
 
     records = []
     for tag in tag_list.split("\n"):
@@ -293,13 +319,15 @@ def load_version(scenes_dir, tag):
 
     target = scene_files[0]
     # If multiple scene files in this commit (the usual case after v001),
-    # pick the one whose version suffix matches this tag (v005 → _v005.)
-    if len(scene_files) > 1 and tag.startswith("v"):
-        version_suffix = f"_v{tag[1:]}."  # e.g. "_v005."
-        for f in scene_files:
-            if version_suffix in f:
-                target = f
-                break
+    # pick the one whose version suffix matches this tag (hero_v005 → _v005.)
+    if len(scene_files) > 1:
+        m = re.search(r'_v(\d{3,})$', tag)
+        if m:
+            version_suffix = f"_v{m.group(1)}."
+            for f in scene_files:
+                if version_suffix in f:
+                    target = f
+                    break
     _, ext = os.path.splitext(target)
     is_binary = ext.lower() == ".mb"
 

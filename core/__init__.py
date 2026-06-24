@@ -10,5 +10,6 @@ from core.vc_engine import (
     load_version,
     _parse_ver,
     _git,
+    get_plugin_repo_hash,
 )
 from core.gitignore import write_gitignore
