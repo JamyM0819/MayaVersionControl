@@ -28,40 +28,20 @@ def _get_maya_window():
     return None
 
 
-def _is_alive(widget):
-    """Return True if the C++ object backing `widget` still exists."""
-    try:
-        from shiboken6 import isValid
-        return isValid(widget)
-    except Exception:
-        pass
-    # Fallback: try touching a property — if it raises, the C++ object is gone
-    try:
-        _ = widget.objectName()
-        return True
-    except Exception:
-        return False
-
-
 def show():
-    """Show the history browser. Reuses existing window if open."""
+    """Show the history browser. Always creates a fresh window."""
     mw = _get_maya_window()
     if mw is None:
         return
 
-    # Try reusing a living window from the stash
+    # Close any existing history window first
     if hasattr(show, "_windows"):
-        for w in show._windows:
-            if _is_alive(w):
-                w.show()
-                w.raise_()
-                w.activateWindow()
-                # Refresh data since it may have changed since last open
-                try:
-                    w._do_refresh()
-                except Exception:
-                    pass
-                return
+        for w in show._windows[:]:
+            try:
+                w.close()
+            except Exception:
+                pass
+        show._windows.clear()
 
     # ---- create new window ----
     win = QWidget(mw, Qt.Window)
@@ -110,19 +90,23 @@ def show():
     lay.addLayout(blay)
 
     # ---- state ----
-    state = {"records": [], "scenes_dir": ""}
-
-    def do_refresh():
-        state["records"] = []
-        state["scenes_dir"] = ""
-        table.setRowCount(0)
-        label.setText("Loading...")
-        info_label.setText("")
+    # Try stored scenes_dir first (survives historical-version opens that
+    # change Maya's current file path to a temp directory).
+    d = getattr(show, "_last_scenes_dir", "") or ""
+    if not d or not os.path.isdir(d):
         try:
             d = get_scenes_dir()
         except Exception:
             d = os.getcwd()
-        state["scenes_dir"] = d
+    show._last_scenes_dir = d
+    state = {"records": [], "scenes_dir": d}
+
+    def do_refresh():
+        state["records"] = []
+        table.setRowCount(0)
+        label.setText("Loading...")
+        info_label.setText("")
+        d = state["scenes_dir"]
 
         # Determine current scene's base name for filtering
         scene_name = None
@@ -190,9 +174,7 @@ def show():
     folder_btn.clicked.connect(on_folder)
 
     do_refresh()
-    # attach refresh method so reusers can refresh stale data
-    win._do_refresh = do_refresh
-    # stash reference so gc doesn't eat the window
+    # stash reference
     if not hasattr(show, "_windows"):
         show._windows = []
     show._windows.append(win)
