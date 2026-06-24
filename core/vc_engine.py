@@ -283,39 +283,42 @@ def get_history(scenes_dir, scene_name=None):
         if not tag:
             continue
         # Only accept tags matching {base}_vNNN format, skip old-style vNNN tags
-        # Tags lack the file extension, so parse manually instead of using _VER_RE
         tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
         if not tag_ver:
             continue
         if filter_base and tag_ver.group(1).lower() != filter_base:
             continue
-        # one-shot: grab hash + date + subject + filenames for this tag
-        # format: "<hash>|<date>|<subject>" then file list after newline
-        info = _git(["log", "-1", "--format=%h|%ai|%s", "--name-only", tag, "--"],
+
+        # Get hash + message from git log (not date — we use file mtime)
+        info = _git(["log", "-1", "--format=%h|%s", "--name-only", tag, "--"],
                     cwd=scenes_dir)
         date_str = ""
         msg = ""
         commit_hash = ""
         tag_file = ""
         if info and "|" in info:
-            # first line: "a1b2c3d|2024-01-15 14:30:00 +0800|v003: update skin weights"
-            # following lines: filenames (one per line)
             lines = info.split("\n")
-            parts = lines[0].split("|", 2)
-            if len(parts) >= 3:
+            parts = lines[0].split("|", 1)
+            if len(parts) >= 2:
                 commit_hash = parts[0][:7]
-                date_raw = parts[1]
-                msg = parts[2]
-                try:
-                    dt = datetime.datetime.strptime(date_raw[:19], "%Y-%m-%d %H:%M:%S")
-                    date_str = dt.strftime("%Y-%m-%d %H:%M")
-                except Exception:
-                    date_str = date_raw[:16]
-            # find the scene file in the tagged commit
+                msg = parts[1]
             for ln in lines[1:]:
                 if ln.lower().endswith((".ma", ".mb")):
                     tag_file = ln.strip()
                     break
+
+        # Date: use the scene file's mtime on disk (ground truth),
+        # fall back to tag file mtime
+        if tag_file:
+            file_path = os.path.join(scenes_dir, tag_file)
+            if os.path.isfile(file_path):
+                date_str = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(file_path)).strftime("%Y-%m-%d %H:%M")
+        if not date_str:
+            ref_path = os.path.join(scenes_dir, ".git", "refs", "tags", tag)
+            if os.path.isfile(ref_path):
+                date_str = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(ref_path)).strftime("%Y-%m-%d %H:%M")
 
         records.append(VersionRecord(
             tag=tag, date=date_str, message=msg.strip(), file=tag_file, hash=commit_hash,
@@ -389,19 +392,22 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Save the current scene, then update the git tag so the
-        # date in version history reflects the actual save time.
-        # We keep the same version number — no new version created.
         cur = cmds.file(q=True, sn=True)
         try:
             mel.eval("file -save -f")
             cmds.warning(f"MayaVC: saved to {cur}")
         except Exception as e:
             cmds.warning(f"MayaVC: save failed - {e}")
-        # Update the tag to point to the saved state
+        # Sync tag file mtime with the saved scene file so they stay aligned
         cur_base, _, cur_ver = _parse_ver(os.path.basename(cur))
         if cur_ver > 0:
-            git_commit(scenes_dir, cur, cur_ver, "Auto-save")
+            tag_path = os.path.join(scenes_dir, ".git", "refs", "tags",
+                                    f"{cur_base}_v{cur_ver:03d}")
+            if os.path.isfile(tag_path) and os.path.isfile(cur):
+                try:
+                    os.utime(tag_path, (os.path.getmtime(cur), os.path.getmtime(cur)))
+                except Exception:
+                    pass
 
     # Open the target version from disk (it's already in scenes/).
     # Only fall back to git extraction if the file doesn't exist on disk.
