@@ -161,7 +161,8 @@ def show():
         if not rows:
             return
         r = state["records"][min(rows)]
-        load_version(state["scenes_dir"], r.tag)
+        if load_version(state["scenes_dir"], r.tag):
+            do_refresh()
 
     def on_folder():
         d = state["scenes_dir"]
