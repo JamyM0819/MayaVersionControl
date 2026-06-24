@@ -391,9 +391,11 @@ def load_version(scenes_dir, tag):
         return False
     if result == "Save and Load":
         # Save the current scene.
+        cur = cmds.file(q=True, sn=True)
         try:
-            mel.eval("file -save")
-            cmds.warning("MayaVC: saved current scene")
+            mel.eval("file -save -f")
+            # Verify the save actually changed the file
+            cmds.warning(f"MayaVC: saved to {cur}")
         except Exception as e:
             cmds.warning(f"MayaVC: save failed - {e}")
 
