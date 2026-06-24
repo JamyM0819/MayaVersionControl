@@ -324,6 +324,34 @@ def get_history(scenes_dir, scene_name=None):
     return records
 
 
+def delete_version(scenes_dir, tag, filename):
+    """Delete a version: remove file from disk and delete git tag.
+
+    This is destructive — the .ma/.mb file is permanently removed from the
+    scenes directory and the git tag is deleted so it no longer appears in
+    the version history.
+
+    Returns True on success, False on failure.
+    """
+    file_path = os.path.join(scenes_dir, filename)
+
+    # 1. Delete the git tag first (reversible-ish: git reflog)
+    if _git(["tag", "-d", tag], cwd=scenes_dir) is None:
+        cmds.warning(f"MayaVC: failed to delete tag {tag}")
+        return False
+
+    # 2. Remove the physical file
+    try:
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        cmds.warning(f"MayaVC: failed to delete file - {e}")
+        return False
+
+    cmds.warning(f"MayaVC: deleted {tag} ({filename})")
+    return True
+
+
 def load_version(scenes_dir, tag):
     """Checkout scene file at tag into scenes/ and open in Maya."""
     # find the .ma/.mb file
@@ -361,9 +389,10 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Save the CURRENT scene directly to scenes/ before loading the
-        # historical version.  After this the working file is a real
-        # project file (not a temp copy), so everything stays consistent.
+        # Save the CURRENT scene in-place before opening the historical
+        # version.  We do NOT commit here — only incremental_save (the
+        # normal commit flow) creates new commits.  This avoids polluting
+        # the version history when switching between versions.
         cur_path = cmds.file(q=True, sn=True)
         if cur_path:
             cur_base, cur_ext, cur_ver = _parse_ver(os.path.basename(cur_path))
@@ -376,8 +405,6 @@ def load_version(scenes_dir, tag):
                     cmds.file(save=True, type=ft, force=True)
                 except Exception as e:
                     cmds.warning(f"MayaVC: save failed - {e}")
-                git_commit(scenes_dir, scenes_path, cur_ver,
-                          f"Auto-save before loading {tag}")
 
     # Extract the historical version directly into scenes/ (NOT a temp dir).
     # This keeps all versioned files inside the real project directory so the

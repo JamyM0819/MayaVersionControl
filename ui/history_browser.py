@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from core.vc_engine import get_scenes_dir, get_history, load_version, _parse_ver, _git, get_plugin_repo_hash
+from core.vc_engine import get_scenes_dir, get_history, load_version, delete_version, _parse_ver, _git, get_plugin_repo_hash
 
 
 def _get_maya_window():
@@ -90,6 +90,9 @@ def show():
     hdr.setSectionResizeMode(3, QHeaderView.Stretch)
     lay.addWidget(table, stretch=1)
 
+    # Enable click-to-sort on column headers
+    table.setSortingEnabled(True)
+
     blay = QHBoxLayout()
     blay.addStretch()
     load_btn = QPushButton("Load This Version")
@@ -98,6 +101,9 @@ def show():
     folder_btn = QPushButton("Show in Folder")
     folder_btn.setEnabled(False)
     blay.addWidget(folder_btn)
+    delete_btn = QPushButton("Delete This Version")
+    delete_btn.setEnabled(False)
+    blay.addWidget(delete_btn)
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
     lay.addLayout(blay)
@@ -165,6 +171,7 @@ def show():
         en = bool(rows) and min(rows) < len(state["records"])
         load_btn.setEnabled(en)
         folder_btn.setEnabled(en)
+        delete_btn.setEnabled(en)
 
     def on_load():
         rows = {idx.row() for idx in table.selectedIndexes()}
@@ -179,10 +186,36 @@ def show():
         if sd and os.path.isdir(sd):
             os.startfile(sd)
 
+    def on_delete():
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if not rows:
+            return
+        r = state["records"][min(rows)]
+        import maya.cmds as cmds
+        confirmed = cmds.confirmDialog(
+            title="⚠  DELETE VERSION — IRREVERSIBLE",
+            message=(
+                f"Permanently delete this version?\n\n"
+                f"  Tag:    {r.tag}\n"
+                f"  File:   {r.file}\n"
+                f"  Date:   {r.date}\n\n"
+                f"⚠ This will DELETE the original project file from disk.\n"
+                f"   There is NO undo for this operation."
+            ),
+            button=["Cancel", "Yes, Delete It"],
+            defaultButton="Cancel",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if confirmed == "Yes, Delete It":
+            if delete_version(state["scenes_dir"], r.tag, r.file):
+                do_refresh()
+
     refresh_btn.clicked.connect(do_refresh)
     table.itemSelectionChanged.connect(on_sel)
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
+    delete_btn.clicked.connect(on_delete)
 
     do_refresh()
     # stash reference so gc doesn't eat the window
