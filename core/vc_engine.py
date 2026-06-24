@@ -272,9 +272,11 @@ def get_history(scenes_dir, scene_name=None):
 
     filter_base = (scene_name or "").lower()
 
-    # list ALL tags sorted by creation date (newest first), then filter in Python.
+    # list ALL tags sorted by version number (descending), then filter in Python.
+    # Sort by tag name instead of creation date so the order stays stable
+    # when a tag is force-updated (Save and Load amends the commit behind it).
     # Avoid git's glob pattern matching which has unreliable escaping on Windows.
-    tag_list = _git(["tag", "-l", "--sort=-creatordate"], cwd=scenes_dir)
+    tag_list = _git(["tag", "-l", "--sort=-version:refname"], cwd=scenes_dir)
     if not tag_list:
         return []
 
@@ -390,14 +392,19 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Save the current scene.
+        # Save the current scene, then update the git tag so the
+        # date in version history reflects the actual save time.
+        # We keep the same version number — no new version created.
         cur = cmds.file(q=True, sn=True)
         try:
             mel.eval("file -save -f")
-            # Verify the save actually changed the file
             cmds.warning(f"MayaVC: saved to {cur}")
         except Exception as e:
             cmds.warning(f"MayaVC: save failed - {e}")
+        # Update the tag to point to the saved state
+        cur_base, _, cur_ver = _parse_ver(os.path.basename(cur))
+        if cur_ver > 0:
+            git_commit(scenes_dir, cur, cur_ver, "Auto-save")
 
     # Open the target version from disk (it's already in scenes/).
     # Only fall back to git extraction if the file doesn't exist on disk.
