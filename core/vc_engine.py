@@ -390,30 +390,47 @@ def load_version(scenes_dir, tag):
         return False
     if result == "Save and Load":
         # Save the CURRENT scene in-place before opening the historical
-        # version.  We do NOT commit here — only incremental_save (the
-        # normal commit flow) creates new commits.  This avoids polluting
-        # the version history when switching between versions.
-        #
-        # IMPORTANT: Don't call cmds.file(rename=...) here — if the path
-        # is identical to the current one, Maya may silently skip the
-        # write.  Just save directly.
+        # version.  Use the same rename+save pattern as incremental_save
+        # to guarantee Maya flushes to disk.  We do NOT git-commit here.
         cur_path = cmds.file(q=True, sn=True)
         if cur_path:
-            cur_base, cur_ext, cur_ver = _parse_ver(os.path.basename(cur_path))
-            if cur_ver > 0:
-                ft = "mayaAscii" if cur_ext == "ma" else "mayaBinary"
-                try:
-                    cmds.file(save=True, type=ft, force=True)
-                    cmds.warning(
-                        f"MayaVC: saved in-place "
-                        f"{os.path.basename(cur_path)}")
-                except Exception as e:
-                    cmds.warning(f"MayaVC: save failed - {e}")
+            _, cur_ext = os.path.splitext(cur_path)
+            ft = "mayaAscii" if cur_ext.lower() == ".ma" else "mayaBinary"
+            try:
+                # Ensure Maya targets the scenes directory (not a temp copy)
+                cmds.file(rename=cur_path)
+                cmds.file(save=True, type=ft, force=True)
+                cmds.warning(
+                    f"MayaVC: saved in-place "
+                    f"{os.path.basename(cur_path)}")
+            except Exception as e:
+                cmds.warning(f"MayaVC: save failed - {e}")
 
-    # Extract the historical version directly into scenes/ (NOT a temp dir).
-    # This keeps all versioned files inside the real project directory so the
-    # version history panel always works against the original project.
+    # Extract the historical version directly into scenes/.
+    # BUT if the user chose "Save and Load" and the target file on disk
+    # already has user edits (mtime > git commit time), keep the disk
+    # version — don't overwrite it with stale git content.
     checkout_path = os.path.join(scenes_dir, target)
+
+    if result == "Save and Load" and os.path.isfile(checkout_path):
+        commit_ts = _git(
+            ["log", "-1", "--format=%ct", tag, "--"],
+            cwd=scenes_dir)
+        if commit_ts:
+            try:
+                if int(os.path.getmtime(checkout_path)) > int(commit_ts):
+                    # Disk file is newer than git — user edits exist.
+                    # Open it directly, skipping git extraction.
+                    cmds.warning(
+                        f"MayaVC: keeping disk version "
+                        f"{os.path.basename(checkout_path)}"
+                        f" (newer than git)")
+                    cmds.file(checkout_path, open=True, force=True)
+                    return True
+            except Exception:
+                pass
+
+    # Extract from git
     if is_binary:
         try:
             r = subprocess.run(
