@@ -33,7 +33,10 @@ def _git(args, cwd, binary=False):
         kwargs.pop("encoding", None)
         kwargs.pop("errors", None)
     try:
-        r = subprocess.run(["git"] + args, cwd=cwd, **kwargs)
+        r = subprocess.run(
+            ["git", "-c", "core.quotepath=false"] + args,
+            cwd=cwd, **kwargs,
+        )
         if r.returncode != 0:
             return None
         if binary:
@@ -216,31 +219,23 @@ def git_commit(scenes_dir, file_path, version, message):
     tag = f"{base}_v{version:03d}"
     full_msg = f"{tag}: {message.strip()}"
 
-    cmds.warning(f"MayaVC [COMMIT 1]: scenes={scenes_dir}, fname={fname}, tag={tag}")
-
     # add
     out = _git(["add", fname], cwd=scenes_dir)
-    cmds.warning(f"MayaVC [COMMIT 2]: git add -> {repr(out)}")
+    if out is None:
+        cmds.warning("MayaVC: git add failed")
+        return False
     st = _git(["status", "--porcelain"], cwd=scenes_dir)
-    cmds.warning(f"MayaVC [COMMIT 3]: git status -> {repr(st)}")
-    if not out and st == "":
-        cmds.warning("MayaVC [COMMIT 4]: nothing to commit, returning")
-        return True
+    if st == "":
+        return True  # nothing to commit, still ok
 
     # commit
     r = _git(["commit", "-m", full_msg], cwd=scenes_dir)
-    cmds.warning(f"MayaVC [COMMIT 5]: git commit -> {repr(r)}")
-    if not r and r != "":
+    if r is None:
         cmds.warning("MayaVC: git commit failed")
         return False
 
     # tag
-    tag_r = _git(["tag", "-f", tag], cwd=scenes_dir)
-    cmds.warning(f"MayaVC [COMMIT 6]: git tag -> {repr(tag_r)}")
-
-    # verify
-    tags_after = _git(["tag", "-l"], cwd=scenes_dir)
-    cmds.warning(f"MayaVC [COMMIT 7]: tags after commit -> {repr(tags_after)}")
+    _git(["tag", "-f", tag], cwd=scenes_dir)
     return True
 
 
@@ -372,7 +367,7 @@ def load_version(scenes_dir, tag):
     if is_binary:
         try:
             r = subprocess.run(
-                ["git", "show", f"{tag}:{target}"],
+                ["git", "-c", "core.quotepath=false", "show", f"{tag}:{target}"],
                 cwd=scenes_dir,
                 capture_output=True, timeout=15,
                 **({"creationflags": 0x08000000} if platform.system() == "Windows" else {}),
