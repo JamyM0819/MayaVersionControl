@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from core.vc_engine import get_scenes_dir, get_history, get_current_info, load_version, _parse_ver
+from core.vc_engine import get_scenes_dir, get_history, load_version, _parse_ver, _git
 
 
 def _get_maya_window():
@@ -126,15 +126,21 @@ def show():
                 f"  ({len(state['records'])} versions)"
             )
 
-            # current version + hash
-            cur_ver, cur_hash = get_current_info(d, scene_name)
-            if cur_ver and cur_hash:
-                info_label.setText(
-                    f"Current: {cur_ver}  |  commit: {cur_hash}"
-                )
-            elif cur_ver:
-                info_label.setText(f"Current: {cur_ver}")
-            else:
+            # current version + hash from the currently open Maya file
+            try:
+                import maya.cmds as cmds
+                p = cmds.file(q=True, sn=True)
+                if p:
+                    cur_base, cur_ext, cur_ver = _parse_ver(p)
+                    if cur_ver > 0:
+                        cur_tag = f"v{cur_ver:03d}"
+                        cur_hash = _git(["log", "-1", "--format=%h", cur_tag, "--"], cwd=d) or ""
+                        info_label.setText(
+                            f"Current: {cur_tag}  |  commit: {cur_hash or '---'}"
+                        )
+                    else:
+                        info_label.setText("Current: (unsaved)")
+            except Exception:
                 info_label.setText("")
         except Exception as e:
             label.setText(f"Error: {e}")

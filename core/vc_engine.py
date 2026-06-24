@@ -125,6 +125,13 @@ def incremental_save(scenes_dir):
         return None
 
 
+def dry_run_next_version(scenes_dir):
+    """Return (base, ext, next_ver, preview_path) without touching disk."""
+    base, ext, ver = detect_next_version(scenes_dir)
+    new_path = os.path.join(scenes_dir, f"{base}_v{ver:03d}.{ext}")
+    return base, ext, ver, new_path
+
+
 def _ensure_git(scenes_dir):
     """git init if needed; set user.name / user.email if missing."""
     if not _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir):
@@ -253,15 +260,6 @@ def get_history(scenes_dir, scene_name=None):
         ))
 
     return records
-
-
-def get_current_info(scenes_dir, scene_name):
-    """Return (version, hash) for the current scene's latest tag, or (None, None)."""
-    records = get_history(scenes_dir, scene_name)
-    if not records:
-        return None, None
-    r = records[0]
-    return r.tag, r.hash
 
 
 def load_version(scenes_dir, tag):

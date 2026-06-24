@@ -3,7 +3,6 @@ shelf_main.py - Maya Shelf button entry point
 """
 
 import os
-import re
 import sys
 
 import maya.cmds as cmds
@@ -12,24 +11,26 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PACKAGE_DIR not in sys.path:
     sys.path.insert(0, _PACKAGE_DIR)
 
-from core.vc_engine import get_scenes_dir, incremental_save, git_commit
+from core.vc_engine import get_scenes_dir, dry_run_next_version, incremental_save, git_commit
 from core.gitignore import write_gitignore
 from ui.commit_dialog import show_commit_dialog
 
 
 def incremental_save_and_commit():
-    """Incremental save + commit dialog + git commit."""
+    """Incremental save + commit dialog + git commit.
+
+    Version is previewed in the dialog but only *locked in* when the user
+    hits Commit — cancelling leaves no new file on disk.
+    """
     scenes_dir = get_scenes_dir()
     if not scenes_dir or not os.path.isdir(scenes_dir):
         cmds.warning("MayaVC: Cannot determine scenes directory.")
         return
 
-    # 1. Save
-    saved_path = incremental_save(scenes_dir)
-    if saved_path is None:
-        return
+    # 1. Preview next version (does NOT save / create anything yet)
+    base, ext, next_ver, preview_path = dry_run_next_version(scenes_dir)
 
-    # 2. Commit dialog
+    # 2. Commit dialog (shows the preview version)
     parent = None
     try:
         from shiboken6 import wrapInstance
@@ -41,20 +42,31 @@ def incremental_save_and_commit():
     except Exception:
         pass
 
-    filename = os.path.basename(saved_path)
-    msg, ok = show_commit_dialog(filename, parent=parent)
+    preview_name = os.path.basename(preview_path)
+    msg, ok = show_commit_dialog(preview_name, parent=parent)
     if not ok:
-        cmds.warning("MayaVC: Commit cancelled (file saved).")
+        cmds.warning("MayaVC: Commit cancelled — nothing saved.")
         return
 
-    # 3. Git commit + tag
-    match = re.search(r'_v(\d{3,})\.', filename)
-    version = int(match.group(1)) if match else 1
+    # 3. Commit confirmed — save-as new versioned file now.
+    new_path = os.path.join(scenes_dir, f"{base}_v{next_ver:03d}.{ext}")
+    ft = "mayaAscii" if ext == "ma" else "mayaBinary"
+    # Save the current scene directly to the new versioned path (save-as),
+    # without calling rename first. This preserves the user's original
+    # working file untouched.
+    try:
+        cmds.file(rename=new_path)
+        cmds.file(save=True, type=ft)
+    except Exception as e:
+        cmds.warning(f"MayaVC: save failed - {e}")
+        return
 
-    if git_commit(scenes_dir, saved_path, version, msg):
-        cmds.warning(f"MayaVC: v{version:03d} committed - {msg}")
+    # 4. Git commit + tag
+    if git_commit(scenes_dir, new_path, next_ver, msg):
+        cmds.warning(f"MayaVC: v{next_ver:03d} committed - {msg}")
     else:
         cmds.warning("MayaVC: Commit failed.")
+        # File was saved even if git failed — warn but don't lose work
 
 
 def show_history():
