@@ -361,23 +361,27 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Always save in-place — overwrite the current file, never create a
-        # new version.  Only incremental_save (the normal commit flow) creates
-        # new version numbers.
+        # Always save to scenes/ — even if Maya's current file is a temp
+        # copy from a prior history load.  Otherwise git_commit would
+        # git-add the stale scenes/ file while the edits live only in
+        # the temp copy (which gets overwritten by the next load).
         cur_path = cmds.file(q=True, sn=True)
         if cur_path:
-            _, cur_ext = os.path.splitext(cur_path)
-            ft = "mayaAscii" if cur_ext.lower() == ".ma" else "mayaBinary"
-            try:
-                cmds.file(save=True, type=ft, force=True)
-                cmds.warning(
-                    f"MayaVC: saved in-place "
-                    f"{os.path.basename(cur_path)}")
-            except Exception as e:
-                cmds.warning(f"MayaVC: save failed - {e}")
-            cur_base, _, cur_ver = _parse_ver(os.path.basename(cur_path))
+            cur_base, cur_ext, cur_ver = _parse_ver(os.path.basename(cur_path))
             if cur_ver > 0:
-                git_commit(scenes_dir, cur_path, cur_ver,
+                # Save directly to the real scenes/ path
+                scenes_path = os.path.join(scenes_dir,
+                                           os.path.basename(cur_path))
+                ft = "mayaAscii" if cur_ext == "ma" else "mayaBinary"
+                try:
+                    cmds.file(rename=scenes_path)
+                    cmds.file(save=True, type=ft, force=True)
+                    cmds.warning(
+                        f"MayaVC: saved in-place "
+                        f"{os.path.basename(scenes_path)}")
+                except Exception as e:
+                    cmds.warning(f"MayaVC: save failed - {e}")
+                git_commit(scenes_dir, scenes_path, cur_ver,
                           f"Auto-save before loading {tag}")
 
     # Read file content — use raw binary for .mb to avoid UTF-8 round-trip corruption
