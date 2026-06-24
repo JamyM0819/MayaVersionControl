@@ -34,11 +34,17 @@ def _git(args, cwd):
 # ---------------------------------------------------------------------------
 
 def get_scenes_dir():
-    """Return the directory where scene files live."""
+    """Return the directory where scene files live.
+
+    Falls back to workspace scenes/ when the current file is in a temp dir
+    (e.g. after opening a historical version via MayaVC).
+    """
+    import tempfile
     path = cmds.file(q=True, sn=True)
     if path:
         d = os.path.dirname(os.path.abspath(path))
-        if d:
+        # Don't use temp directories — they aren't the real project
+        if d and not _is_temp_dir(d):
             return d
     # fallback: Maya project scenes/
     try:
@@ -51,6 +57,19 @@ def get_scenes_dir():
     except Exception:
         pass
     return ""
+
+
+def _is_temp_dir(d):
+    """Heuristic: return True if *d* looks like a temp/scratch directory."""
+    d = os.path.normpath(os.path.abspath(d)).lower()
+    import tempfile
+    tmp = os.path.normpath(tempfile.gettempdir()).lower()
+    if d.startswith(tmp):
+        return True
+    # also catch "maya_vc_" our own temp prefix
+    if os.path.basename(d).startswith("maya_vc_"):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
