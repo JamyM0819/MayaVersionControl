@@ -175,7 +175,8 @@ def dry_run_next_version(scenes_dir):
 
 def _ensure_git(scenes_dir):
     """git init if needed; set user.name / user.email if missing."""
-    if not _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir):
+    inside = _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir)
+    if inside != "true":
         _git(["init"], cwd=scenes_dir)
 
     if not _git(["-C", scenes_dir, "config", "user.name"], cwd=scenes_dir) \
