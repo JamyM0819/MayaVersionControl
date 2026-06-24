@@ -1,0 +1,48 @@
+# Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Maya scene files
+*.ma
+*.mb
+*.mel
+
+# Maya preferences and cache
+prefs/
+cache/
+*.mll
+*.xpm
+
+# Log files
+*.log
+*.txt
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Test files (keep test structure but ignore generated content)
+test/*/scenes/
+test/*/workspace.mel
