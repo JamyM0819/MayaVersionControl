@@ -10,6 +10,7 @@ import datetime
 import platform
 
 import maya.cmds as cmds
+import maya.mel as mel
 
 # Windows: no cmd.exe popup; force utf-8 encoding
 if platform.system() == "Windows":
@@ -389,9 +390,9 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Save the current scene.  Simple as it should be.
+        # Save the current scene.
         try:
-            cmds.file(save=True, force=True)
+            mel.eval("file -save")
             cmds.warning("MayaVC: saved current scene")
         except Exception as e:
             cmds.warning(f"MayaVC: save failed - {e}")
