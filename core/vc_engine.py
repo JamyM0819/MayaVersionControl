@@ -325,7 +325,7 @@ def get_history(scenes_dir, scene_name=None):
 
 
 def load_version(scenes_dir, tag):
-    """Checkout scene file at tag into temp file and open in Maya."""
+    """Checkout scene file at tag into scenes/ and open in Maya."""
     # find the .ma/.mb file
     files = _git(["ls-tree", "-r", "--name-only", tag], cwd=scenes_dir)
     if files is None:
@@ -361,30 +361,28 @@ def load_version(scenes_dir, tag):
     if result == "Cancel":
         return False
     if result == "Save and Load":
-        # Always save to scenes/ — even if Maya's current file is a temp
-        # copy from a prior history load.  Otherwise git_commit would
-        # git-add the stale scenes/ file while the edits live only in
-        # the temp copy (which gets overwritten by the next load).
+        # Save the CURRENT scene directly to scenes/ before loading the
+        # historical version.  After this the working file is a real
+        # project file (not a temp copy), so everything stays consistent.
         cur_path = cmds.file(q=True, sn=True)
         if cur_path:
             cur_base, cur_ext, cur_ver = _parse_ver(os.path.basename(cur_path))
             if cur_ver > 0:
-                # Save directly to the real scenes/ path
                 scenes_path = os.path.join(scenes_dir,
                                            os.path.basename(cur_path))
                 ft = "mayaAscii" if cur_ext == "ma" else "mayaBinary"
                 try:
                     cmds.file(rename=scenes_path)
                     cmds.file(save=True, type=ft, force=True)
-                    cmds.warning(
-                        f"MayaVC: saved in-place "
-                        f"{os.path.basename(scenes_path)}")
                 except Exception as e:
                     cmds.warning(f"MayaVC: save failed - {e}")
                 git_commit(scenes_dir, scenes_path, cur_ver,
                           f"Auto-save before loading {tag}")
 
-    # Read file content — use raw binary for .mb to avoid UTF-8 round-trip corruption
+    # Extract the historical version directly into scenes/ (NOT a temp dir).
+    # This keeps all versioned files inside the real project directory so the
+    # version history panel always works against the original project.
+    checkout_path = os.path.join(scenes_dir, target)
     if is_binary:
         try:
             r = subprocess.run(
@@ -402,28 +400,22 @@ def load_version(scenes_dir, tag):
             cmds.warning(f"MayaVC: could not read {tag}:{target}")
             return False
     else:
-        # .ma is ASCII — safe to read as text
         content = _git(["show", f"{tag}:{target}"], cwd=scenes_dir)
         if not content:
             cmds.warning(f"MayaVC: could not read {tag}:{target}")
             return False
         content_bytes = content.encode("utf-8")
 
-    import tempfile
-    # Use original filename inside a temp dir so Maya shows the real name
-    tmp_dir = tempfile.mkdtemp(prefix="maya_vc_")
-    tmp = os.path.join(tmp_dir, target)
-    os.makedirs(os.path.dirname(tmp), exist_ok=True)
-    with open(tmp, "wb") as f:
+    with open(checkout_path, "wb") as f:
         f.write(content_bytes)
 
     try:
-        cmds.file(tmp, open=True, force=True)
+        cmds.file(checkout_path, open=True, force=True)
         return True
     except Exception:
-        # fallback: try import
         try:
-            cmds.file(tmp, i=True, type="mayaBinary" if is_binary else "mayaAscii")
+            cmds.file(checkout_path, i=True,
+                      type="mayaBinary" if is_binary else "mayaAscii")
             return True
         except Exception as e:
             cmds.warning(f"MayaVC: open failed - {e}")
