@@ -393,16 +393,20 @@ def load_version(scenes_dir, tag):
         # version.  We do NOT commit here — only incremental_save (the
         # normal commit flow) creates new commits.  This avoids polluting
         # the version history when switching between versions.
+        #
+        # IMPORTANT: Don't call cmds.file(rename=...) here — if the path
+        # is identical to the current one, Maya may silently skip the
+        # write.  Just save directly.
         cur_path = cmds.file(q=True, sn=True)
         if cur_path:
             cur_base, cur_ext, cur_ver = _parse_ver(os.path.basename(cur_path))
             if cur_ver > 0:
-                scenes_path = os.path.join(scenes_dir,
-                                           os.path.basename(cur_path))
                 ft = "mayaAscii" if cur_ext == "ma" else "mayaBinary"
                 try:
-                    cmds.file(rename=scenes_path)
                     cmds.file(save=True, type=ft, force=True)
+                    cmds.warning(
+                        f"MayaVC: saved in-place "
+                        f"{os.path.basename(cur_path)}")
                 except Exception as e:
                     cmds.warning(f"MayaVC: save failed - {e}")
 
