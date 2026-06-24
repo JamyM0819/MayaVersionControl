@@ -174,9 +174,13 @@ def dry_run_next_version(scenes_dir):
 
 
 def _ensure_git(scenes_dir):
-    """git init if needed; set user.name / user.email if missing."""
-    inside = _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir)
-    if inside != "true":
+    """git init if needed; set user.name / user.email if missing.
+
+    We check for a .git directory INSIDE scenes_dir specifically, because
+    git rev-parse --is-inside-work-tree would walk up to a parent repo
+    (e.g. the MayaVC plugin repo itself) and falsely report 'true'.
+    """
+    if not os.path.isdir(os.path.join(scenes_dir, ".git")):
         _git(["init"], cwd=scenes_dir)
 
     if not _git(["-C", scenes_dir, "config", "user.name"], cwd=scenes_dir) \
@@ -248,7 +252,7 @@ def get_history(scenes_dir, scene_name=None):
                     (e.g. "hero" matches hero_v001.ma, hero_v005.mb).
                     If None/empty, show all versions across all scenes.
     """
-    if not _git(["rev-parse", "--is-inside-work-tree"], cwd=scenes_dir):
+    if not os.path.isdir(os.path.join(scenes_dir, ".git")):
         return []
 
     filter_base = (scene_name or "").lower()
