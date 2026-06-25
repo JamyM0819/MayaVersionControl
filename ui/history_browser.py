@@ -68,8 +68,12 @@ def show():
     lay.setContentsMargins(6, 6, 6, 6)
     lay.setSpacing(4)
 
+    top_bar = QHBoxLayout()
     label = QLabel("Project: (click Refresh)")
-    lay.addWidget(label)
+    top_bar.addWidget(label, stretch=1)
+    filter_toggle_btn = QPushButton("只看当前")
+    top_bar.addWidget(filter_toggle_btn)
+    lay.addLayout(top_bar)
 
     info_label = QLabel("")
     info_label.setStyleSheet("font-size: 11px; color: #888;")
@@ -109,9 +113,12 @@ def show():
     lay.addLayout(blay)
 
     # ---- state ----
-    state = {"records": [], "scenes_dir": d}
+    state = {"records": [], "scenes_dir": d, "filter_mode": "all"}
 
-    def do_refresh():
+    def do_refresh(filter_mode=None):
+        if filter_mode is not None:
+            state["filter_mode"] = filter_mode
+
         state["records"] = []
         table.setRowCount(0)
         label.setText("Loading...")
@@ -128,12 +135,24 @@ def show():
         except Exception:
             pass
 
+        # In "filter_current" mode, only show versions matching current scene base name
+        filter_scene = scene_name if state["filter_mode"] == "current" else None
+
         try:
-            state["records"] = get_history(d, scene_name)
-            suffix = f" for '{scene_name}'" if scene_name else ""
+            state["records"] = get_history(d, filter_scene)
+            # Count always reflects current scene's base name versions
+            if scene_name and not filter_scene:
+                my_count = sum(1 for r in state["records"]
+                              if r.tag.startswith(scene_name + "_v"))
+            else:
+                my_count = len(state["records"])
+            if filter_scene:
+                suffix = f" for '{filter_scene}' (filtered)"
+            else:
+                suffix = f" for '{scene_name}'" if scene_name else ""
             label.setText(
                 f"Project: {os.path.basename(d) or d}{suffix}"
-                f"  ({len(state['records'])} versions)"
+                f"  ({my_count} versions)"
             )
 
             # current version + hash from the currently open Maya file
@@ -211,7 +230,18 @@ def show():
             if delete_version(state["scenes_dir"], r.tag, r.file):
                 do_refresh()
 
+    def on_toggle():
+        if state["filter_mode"] == "all":
+            # Switch to "current only" mode
+            filter_toggle_btn.setText("全部显示")
+            do_refresh("current")
+        else:
+            # Switch back to "show all" mode
+            filter_toggle_btn.setText("只看当前")
+            do_refresh("all")
+
     refresh_btn.clicked.connect(do_refresh)
+    filter_toggle_btn.clicked.connect(on_toggle)
     table.itemSelectionChanged.connect(on_sel)
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
