@@ -5,6 +5,7 @@ Simple QWidget with Qt.Window flag, parented to Maya main window.
 
 import os
 import re
+import textwrap as _textwrap
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -182,15 +183,17 @@ def show():
     table.setAlternatingRowColors(True)
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
-    hdr.setStretchLastSection(True)
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
     hdr.setSectionResizeMode(1, QHeaderView.Interactive)
     hdr.setSectionResizeMode(2, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+    hdr.setSectionResizeMode(3, QHeaderView.Stretch)  # fill remaining width; resize triggers rewrap
     # Default column widths
     table.setColumnWidth(0, 150)
     table.setColumnWidth(1, 80)
     table.setColumnWidth(2, 140)
+    table.setColumnWidth(3, 300)
+    # Disable native word-wrap on Message column — we handle wrapping ourselves
+    table.setWordWrap(False)
     lay.addWidget(table, stretch=1)
 
     # Enable click-to-sort on column headers
@@ -353,18 +356,102 @@ def show():
         # Auto-scroll to current version row
         _scroll_to_current()
 
-    def _collapsed_for_tag(tag, full_msg):
-        """Return the display text for message column, respecting collapse state."""
+    def _msg_col_chars():
+        """Return chars that fit in the Message column at current width."""
+        fm = table.fontMetrics()
+        col_w = table.columnWidth(3)
+        pad = 28  # cell padding + scrollbar margin
+        avail = max(30, col_w - pad)
+        avg = fm.averageCharWidth()
+        if avg <= 0:
+            avg = 7
+        return max(20, int(avail / avg))
+
+    def _split_ts_body(line):
+        """Split a message line into (timestamp_prefix, body_text).
+
+        Returns (ts, body) if line starts with '[YYYY-MM-DD HH:MM] ',
+        otherwise (None, line).  The timestamp prefix is stripped from body.
+        """
+        m = re.match(r'^(\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] )', line)
+        if m:
+            return m.group(1), line[m.end():]
+        return None, line
+
+    def _wrap_body(body, wrap_chars, indent_str):
+        """Wrap body text to fit column width, with indent_str on every line."""
+        lines = body.split("\n")
+        out = []
+        for ln in lines:
+            if not ln.strip():
+                out.append(indent_str)
+                continue
+            w = max(20, wrap_chars - len(indent_str))
+            wrapped = _textwrap.wrap(ln, width=w)
+            out.extend(indent_str + ww for ww in wrapped)
+        return "\n".join(out)
+
+    def _build_msg_display(full_msg, collapsed, wrap_chars):
+        """Build the display text for a message cell.
+
+        Every record starts with a timestamp line, followed by its body
+        indented beneath.  This guarantees timestamp and body text never
+        overlap vertically — the timestamp is always on its own short line.
+        """
         if "\n" not in full_msg:
+            # Single commit — no arrow, just timestamp + body inline
+            ts, body = _split_ts_body(full_msg)
+            if ts:
+                return ts + body
             return full_msg
-        collapsed = _COLLAPSED_STATE.get(tag, True)  # default collapsed
-        lines = full_msg.split("\n")
-        if collapsed:
-            return "▼ " + lines[0]
-        else:
-            # First line with ▲ arrow, rest indented
-            parts = ["▲ " + lines[0]] + ["   " + ln for ln in lines[1:]]
-            return "\n".join(parts)
+
+        # Multi-commit (git_amend_commit appends)
+        records = full_msg.split("\n")
+        blocks = []
+        for rec in records:
+            ts, body = _split_ts_body(rec)
+            if collapsed:
+                # Only show first record, single-line summary
+                arrow = "▼ "
+                if ts:
+                    blocks.append(arrow + ts + body)
+                else:
+                    blocks.append(arrow + rec)
+                break  # one record in collapsed mode
+            else:
+                # Expanded: each record gets its own ts line + body block
+                arrow = "▲ " if not blocks else "   "  # ▲ on first, rest plain
+                if ts:
+                    body_text = _wrap_body(body, wrap_chars, "      ")
+                    blocks.append(arrow + ts.rstrip() + "\n" + body_text)
+                else:
+                    blocks.append(arrow + _wrap_body(rec, wrap_chars, "      "))
+        return "\n".join(blocks)
+
+    def _rewrap_all_messages():
+        """Re-wrap all visible message texts for current column width."""
+        visible = state.get("visible")
+        if not visible:
+            return
+        w = _msg_col_chars()
+        for i, r in enumerate(visible):
+            full_msg = r.message or ""
+            new_text = _collapsed_for_tag(r.tag, full_msg, wrap_chars=w)
+            item = table.item(i, 3)
+            if item and item.text() != new_text:
+                item.setText(new_text)
+                table.resizeRowToContents(i)
+
+    def _on_msg_col_resized(col, old_w, new_w):
+        if col == 3 and new_w != old_w:
+            _rewrap_all_messages()
+
+    def _collapsed_for_tag(tag, full_msg, wrap_chars=None):
+        """Return the display text for message column, respecting collapse state."""
+        if wrap_chars is None:
+            wrap_chars = _msg_col_chars()
+        collapsed = _COLLAPSED_STATE.get(tag, True)
+        return _build_msg_display(full_msg, collapsed, wrap_chars)
 
     def _scroll_to_current():
         """Scroll to and select the current version row, if visible."""
@@ -394,7 +481,7 @@ def show():
         _save_collapsed()
 
         # Update the item text immediately
-        new_text = _collapsed_for_tag(tag, full_msg)
+        new_text = _collapsed_for_tag(tag, full_msg, wrap_chars=_msg_col_chars())
         msg_item = table.item(item.row(), 3)
         msg_item.setText(new_text)
         table.resizeRowToContents(item.row())
@@ -632,6 +719,7 @@ def show():
     filter_toggle_btn.clicked.connect(on_toggle)
     latest_only_btn.clicked.connect(on_latest_only)
     info_label.linkActivated.connect(lambda: _scroll_to_current())
+    hdr.sectionResized.connect(_on_msg_col_resized)
     table.itemSelectionChanged.connect(on_sel)
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
