@@ -16,7 +16,10 @@ from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
-                              _parse_ver, _git, get_plugin_repo_hash, git_amend_commit)
+                              _parse_ver, _git, get_plugin_repo_hash, git_amend_commit,
+                              dry_run_next_version, git_commit)
+from core.gitignore import write_gitignore
+from core.perf_monitor import show_perf_panel
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +194,17 @@ def show():
     table.setSortingEnabled(True)
 
     blay = QHBoxLayout()
+    # left group: save actions
+    inc_save_btn = QPushButton("Incremental Save")
+    blay.addWidget(inc_save_btn)
+    save_commit_btn = QPushButton("Save w/ Commit")
+    blay.addWidget(save_commit_btn)
+    blay.addStretch()
+    # right group: tools
+    clear_cache_btn = QPushButton("Clear Cache")
+    blay.addWidget(clear_cache_btn)
+    perf_btn = QPushButton("Perf")
+    blay.addWidget(perf_btn)
     delete_btn = QPushButton("Delete This Version")
     delete_btn.setEnabled(False)
     blay.addWidget(delete_btn)
@@ -207,13 +221,9 @@ def show():
     folder_btn = QPushButton("Show in Folder")
     folder_btn.setEnabled(False)
     blay.addWidget(folder_btn)
-    save_commit_btn = QPushButton("Save w/ Commit")
-    blay.addWidget(save_commit_btn)
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
     lay.addLayout(blay)
-
-    # ---- state ----
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
              "latest_only": False, "edit_mode": False}
 
@@ -510,6 +520,73 @@ def show():
             if delete_version(state["scenes_dir"], r.tag, r.file):
                 do_refresh()
 
+    def on_inc_save():
+        """Incremental save: save-as new versioned file + commit with user message."""
+        import maya.cmds as cmds
+        import maya.mel as mel
+
+        d = state["scenes_dir"]
+        if not d or not os.path.isdir(d):
+            cmds.warning("MayaVC: Cannot determine scenes directory.")
+            return
+
+        base, ext, next_ver, _ = dry_run_next_version(d)
+
+        # Ask for commit message
+        user_msg = cmds.promptDialog(
+            title="Incremental Save",
+            message=f"Save as {base}_v{next_ver:03d}.{ext}\n\nCommit message:",
+            button=["Commit", "Cancel"],
+            defaultButton="Commit",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if user_msg == "Cancel":
+            return
+        msg = cmds.promptDialog(q=True, text=True) or ""
+
+        if not msg.strip():
+            cmds.warning("MayaVC: empty message — commit skipped")
+            return
+
+        # Save-as to new versioned file
+        new_path = os.path.join(d, f"{base}_v{next_ver:03d}.{ext}")
+        ft = "mayaAscii" if ext == "ma" else "mayaBinary"
+        try:
+            cmds.file(rename=new_path)
+            cmds.file(save=True, type=ft)
+        except Exception as e:
+            cmds.warning(f"MayaVC: save failed - {e}")
+            return
+
+        # Git commit + tag
+        if git_commit(d, new_path, next_ver, msg):
+            cmds.warning(f"MayaVC: v{next_ver:03d} committed - {msg}")
+            do_refresh()
+        else:
+            cmds.warning("MayaVC: Commit failed.")
+
+    def on_clear_cache():
+        """Clear Maya's module cache and reload MayaVC modules."""
+        import sys
+        import maya.cmds as cmds
+
+        # Clear MayaVC modules from sys.modules
+        to_remove = [k for k in sys.modules if k.startswith(("core.", "ui."))]
+        for k in to_remove:
+            del sys.modules[k]
+        # Also remove top-level entries
+        for top in ("core", "ui"):
+            if top in sys.modules:
+                del sys.modules[top]
+
+        cmds.warning(f"MayaVC: cleared {len(to_remove)} cached modules — "
+                     "reopen panel to reload.")
+
+    def on_perf():
+        """Open the performance monitor panel."""
+        show_perf_panel()
+
     def on_toggle():
         if state["filter_mode"] == "all":
             filter_toggle_btn.setText("全部显示")
@@ -536,6 +613,9 @@ def show():
     folder_btn.clicked.connect(on_folder)
     delete_btn.clicked.connect(on_delete)
     save_commit_btn.clicked.connect(on_save_commit)
+    inc_save_btn.clicked.connect(on_inc_save)
+    clear_cache_btn.clicked.connect(on_clear_cache)
+    perf_btn.clicked.connect(on_perf)
 
     do_refresh()
 
