@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
+from shiboken6 import isValid as _isValid
 
 from core.vc_engine import get_scenes_dir, get_history, load_version, delete_version, _parse_ver, _git, get_plugin_repo_hash
 
@@ -48,6 +49,38 @@ def _save_collapsed():
 
 
 # ---------------------------------------------------------------------------
+# Persistent window geometry (survives Maya sessions)
+# ---------------------------------------------------------------------------
+
+def _load_geometry():
+    """Restore previous window position/size from Maya optionVars.
+    Returns (x, y, w, h) or None."""
+    try:
+        import maya.cmds as cmds
+        x = cmds.optionVar(q="MayaVC_win_x")
+        y = cmds.optionVar(q="MayaVC_win_y")
+        w = cmds.optionVar(q="MayaVC_win_w")
+        h = cmds.optionVar(q="MayaVC_win_h")
+        if all(v is not None for v in (x, y, w, h)):
+            return (int(x), int(y), int(w), int(h))
+    except Exception:
+        pass
+    return None
+
+
+def _save_geometry(x, y, w, h):
+    """Persist window position/size to Maya optionVars as 4 plain ints."""
+    try:
+        import maya.cmds as cmds
+        cmds.optionVar(iv=("MayaVC_win_x", int(x)))
+        cmds.optionVar(iv=("MayaVC_win_y", int(y)))
+        cmds.optionVar(iv=("MayaVC_win_w", int(w)))
+        cmds.optionVar(iv=("MayaVC_win_h", int(h)))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 
@@ -73,11 +106,17 @@ def show():
     if mw is None:
         return
 
-    # Close any existing history window first
+    # Close any existing history window first — save geometry before closing
     if hasattr(show, "_windows"):
         for w in show._windows[:]:
             try:
-                w.close()
+                if _isValid(w):
+                    # Save position/size before closing (use plain ints, not saveGeometry)
+                    pos = w.pos()
+                    sz = w.size()
+                    _save_geometry(pos.x(), pos.y(), sz.width(), sz.height())
+                    _save_collapsed()
+                    w.close()
             except Exception:
                 pass
         show._windows.clear()
@@ -100,7 +139,15 @@ def show():
     win = QWidget(mw, Qt.Window)
     win.setObjectName("MayaVCHistoryWidget")
     win.setWindowTitle(f"Maya Version History{repo_hash}")
-    win.resize(900, 550)
+
+    # Restore previous geometry if available
+    geo = _load_geometry()
+    if geo:
+        x, y, w, h = geo
+        win.setGeometry(x, y, w, h)
+    else:
+        win.resize(900, 550)
+
     win.setMinimumSize(600, 350)
 
     lay = QVBoxLayout(win)
@@ -129,16 +176,23 @@ def show():
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
     hdr.setStretchLastSection(True)
-    hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-    hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-    hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    hdr.setSectionResizeMode(0, QHeaderView.Interactive)
+    hdr.setSectionResizeMode(1, QHeaderView.Interactive)
+    hdr.setSectionResizeMode(2, QHeaderView.Interactive)
     hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+    # Default column widths
+    table.setColumnWidth(0, 150)
+    table.setColumnWidth(1, 80)
+    table.setColumnWidth(2, 140)
     lay.addWidget(table, stretch=1)
 
     # Enable click-to-sort on column headers
     table.setSortingEnabled(True)
 
     blay = QHBoxLayout()
+    delete_btn = QPushButton("Delete This Version")
+    delete_btn.setEnabled(False)
+    blay.addWidget(delete_btn)
     edit_btn = QPushButton("Edit")
     blay.addWidget(edit_btn)
     delete_selected_btn = QPushButton("Delete Selected")
@@ -152,9 +206,6 @@ def show():
     folder_btn = QPushButton("Show in Folder")
     folder_btn.setEnabled(False)
     blay.addWidget(folder_btn)
-    delete_btn = QPushButton("Delete This Version")
-    delete_btn.setEnabled(False)
-    blay.addWidget(delete_btn)
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
     lay.addLayout(blay)
@@ -261,6 +312,10 @@ def show():
             msg_item.setData(Qt.UserRole, full_msg)
             table.setItem(i, 3, msg_item)
 
+            # Expand row height for expanded (▲) messages
+            if "\n" in folded:
+                table.resizeRowToContents(i)
+
     def _collapsed_for_tag(tag, full_msg):
         """Return the display text for message column, respecting collapse state."""
         if "\n" not in full_msg:
@@ -302,8 +357,6 @@ def show():
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < len(state.get("visible", []))
             delete_selected_btn.setEnabled(en)
-            load_btn.setEnabled(True)
-            folder_btn.setEnabled(True)
             delete_btn.setEnabled(True)
         else:
             rows = {idx.row() for idx in table.selectedIndexes()}
@@ -435,6 +488,7 @@ def show():
     delete_btn.clicked.connect(on_delete)
 
     do_refresh()
+
     # stash reference so gc doesn't eat the window
     if not hasattr(show, "_windows"):
         show._windows = []
