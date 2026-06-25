@@ -4,6 +4,7 @@ Simple QWidget with Qt.Window flag, parented to Maya main window.
 """
 
 import os
+import re
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -71,6 +72,8 @@ def show():
     top_bar = QHBoxLayout()
     label = QLabel("Project: (click Refresh)")
     top_bar.addWidget(label, stretch=1)
+    latest_only_btn = QPushButton("只看最新")
+    top_bar.addWidget(latest_only_btn)
     filter_toggle_btn = QPushButton("只看当前")
     top_bar.addWidget(filter_toggle_btn)
     lay.addLayout(top_bar)
@@ -113,11 +116,31 @@ def show():
     lay.addLayout(blay)
 
     # ---- state ----
-    state = {"records": [], "scenes_dir": d, "filter_mode": "all"}
+    state = {"records": [], "scenes_dir": d, "filter_mode": "all", "latest_only": False}
 
-    def do_refresh(filter_mode=None):
+    def _visible_records(records, latest_only):
+        """If latest_only, return only the highest-version record per base name."""
+        if not latest_only:
+            return records
+        best = {}
+        ver_re = re.compile(r'^(.+)_v(\d{3,})$')
+        for r in records:
+            m = ver_re.match(r.tag)
+            if not m:
+                continue
+            base = m.group(1)
+            ver = int(m.group(2))
+            if base not in best or ver > best[base][1]:
+                best[base] = (r, ver)
+        # Preserve original order (newest-first) but only keep best per base
+        selected = set(v[0] for v in best.values())
+        return [r for r in records if r in selected]
+
+    def do_refresh(filter_mode=None, latest_only=None):
         if filter_mode is not None:
             state["filter_mode"] = filter_mode
+        if latest_only is not None:
+            state["latest_only"] = latest_only
 
         state["records"] = []
         table.setRowCount(0)
@@ -174,8 +197,10 @@ def show():
         except Exception as e:
             label.setText(f"Error: {e}")
 
-        table.setRowCount(len(state["records"]))
-        for i, r in enumerate(state["records"]):
+        visible = _visible_records(state["records"], state["latest_only"])
+        state["visible"] = visible
+        table.setRowCount(len(visible))
+        for i, r in enumerate(visible):
             tag_item = QTableWidgetItem(r.tag or "-")
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
@@ -187,7 +212,7 @@ def show():
 
     def on_sel():
         rows = {idx.row() for idx in table.selectedIndexes()}
-        en = bool(rows) and min(rows) < len(state["records"])
+        en = bool(rows) and min(rows) < len(state.get("visible", []))
         load_btn.setEnabled(en)
         folder_btn.setEnabled(en)
         delete_btn.setEnabled(en)
@@ -196,7 +221,7 @@ def show():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
             return
-        r = state["records"][min(rows)]
+        r = state["visible"][min(rows)]
         if load_version(state["scenes_dir"], r.tag):
             do_refresh()
 
@@ -209,7 +234,7 @@ def show():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
             return
-        r = state["records"][min(rows)]
+        r = state["visible"][min(rows)]
         import maya.cmds as cmds
         confirmed = cmds.confirmDialog(
             title="⚠  DELETE VERSION — IRREVERSIBLE",
@@ -232,16 +257,23 @@ def show():
 
     def on_toggle():
         if state["filter_mode"] == "all":
-            # Switch to "current only" mode
             filter_toggle_btn.setText("全部显示")
-            do_refresh("current")
+            do_refresh(filter_mode="current")
         else:
-            # Switch back to "show all" mode
             filter_toggle_btn.setText("只看当前")
-            do_refresh("all")
+            do_refresh(filter_mode="all")
+
+    def on_latest_only():
+        if state["latest_only"]:
+            latest_only_btn.setText("只看最新")
+            do_refresh(latest_only=False)
+        else:
+            latest_only_btn.setText("历史版本")
+            do_refresh(latest_only=True)
 
     refresh_btn.clicked.connect(do_refresh)
     filter_toggle_btn.clicked.connect(on_toggle)
+    latest_only_btn.clicked.connect(on_latest_only)
     table.itemSelectionChanged.connect(on_sel)
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
