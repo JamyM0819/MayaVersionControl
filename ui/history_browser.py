@@ -15,7 +15,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
-from core.vc_engine import get_scenes_dir, get_history, load_version, delete_version, _parse_ver, _git, get_plugin_repo_hash
+from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
+                              _parse_ver, _git, get_plugin_repo_hash, git_amend_commit)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +207,8 @@ def show():
     folder_btn = QPushButton("Show in Folder")
     folder_btn.setEnabled(False)
     blay.addWidget(folder_btn)
+    save_commit_btn = QPushButton("Save w/ Commit")
+    blay.addWidget(save_commit_btn)
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
     lay.addLayout(blay)
@@ -423,6 +426,52 @@ def show():
                 cmds.warning(f"MayaVC: {failed} of {len(rows)} deletions failed")
             do_refresh()
 
+    def on_save_commit():
+        """Save current Maya scene and append a commit to the current version tag."""
+        import maya.cmds as cmds
+        import maya.mel as mel
+
+        cur = cmds.file(q=True, sn=True)
+        if not cur:
+            cmds.warning("MayaVC: no file open — cannot save w/ commit")
+            return
+
+        cur_base, cur_ext, cur_ver = _parse_ver(os.path.basename(cur))
+        if cur_ver <= 0:
+            cmds.warning("MayaVC: current file has no version — use incremental save first")
+            return
+
+        # Ask for commit message
+        user_msg = cmds.promptDialog(
+            title="Save w/ Commit",
+            message=f"Describe this save (appended to {cur_base}_v{cur_ver:03d}):",
+            button=["Commit", "Cancel"],
+            defaultButton="Commit",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if user_msg == "Cancel":
+            return
+        append_msg = cmds.promptDialog(q=True, text=True) or ""
+
+        if not append_msg.strip():
+            cmds.warning("MayaVC: empty message — commit skipped")
+            return
+
+        # Save
+        try:
+            mel.eval("file -save -f")
+        except Exception as e:
+            cmds.warning(f"MayaVC: save failed - {e}")
+            return
+
+        # Commit
+        if git_amend_commit(state["scenes_dir"], cur, cur_ver, append_msg.strip()):
+            cmds.warning(f"MayaVC: commit appended to {cur_base}_v{cur_ver:03d}")
+            do_refresh()
+        else:
+            cmds.warning("MayaVC: commit failed")
+
     def on_load():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
@@ -486,6 +535,7 @@ def show():
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
     delete_btn.clicked.connect(on_delete)
+    save_commit_btn.clicked.connect(on_save_commit)
 
     do_refresh()
 
