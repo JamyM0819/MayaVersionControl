@@ -13,3 +13,4 @@ from core.vc_engine import (
     get_plugin_repo_hash,
 )
 from core.gitignore import write_gitignore
+from core.perf_monitor import perf_timed, perf_scope, get_perf, show_perf_panel

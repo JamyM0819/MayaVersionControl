@@ -12,6 +12,8 @@ import platform
 import maya.cmds as cmds
 import maya.mel as mel
 
+from core.perf_monitor import perf_timed, perf_scope
+
 # Windows: no cmd.exe popup; force utf-8 encoding
 if platform.system() == "Windows":
     _SUB_KWARGS = dict(capture_output=True, text=True, timeout=15,
@@ -28,16 +30,18 @@ def _git(args, cwd, binary=False):
     distinguish between "git add succeeded with no output" and "git failed".
     When checking for failure, use `if _git(...) is None`.
     """
+    cmd_label = f"git {' '.join(args[:2])}"  # e.g. "git tag -l", "git commit -m"
     kwargs = dict(_SUB_KWARGS)
     if binary:
         kwargs.pop("text", None)
         kwargs.pop("encoding", None)
         kwargs.pop("errors", None)
     try:
-        r = subprocess.run(
-            ["git", "-c", "core.quotepath=false"] + args,
-            cwd=cwd, **kwargs,
-        )
+        with perf_scope(cmd_label):
+            r = subprocess.run(
+                ["git", "-c", "core.quotepath=false"] + args,
+                cwd=cwd, **kwargs,
+            )
         if r.returncode != 0:
             return None
         if binary:
@@ -51,6 +55,7 @@ def _git(args, cwd, binary=False):
 # Path helpers
 # ---------------------------------------------------------------------------
 
+@perf_timed()
 def get_scenes_dir():
     """Return the directory where scene files live.
 
@@ -163,14 +168,17 @@ def detect_next_version(scenes_dir, base=None):
 # Core: save + commit
 # ---------------------------------------------------------------------------
 
+@perf_timed()
 def incremental_save(scenes_dir):
     """Save-as _vNNN, return new path or None."""
     base, ext, ver = detect_next_version(scenes_dir)
     new_path = os.path.join(scenes_dir, f"{base}_v{ver:03d}.{ext}")
     ft = "mayaAscii" if ext == "ma" else "mayaBinary"
     try:
-        cmds.file(rename=new_path)
-        cmds.file(save=True, type=ft)
+        with perf_scope("maya_file_rename"):
+            cmds.file(rename=new_path)
+        with perf_scope("maya_file_save"):
+            cmds.file(save=True, type=ft)
         return new_path
     except Exception as e:
         cmds.warning(f"MayaVC: save failed - {e}")
@@ -212,6 +220,7 @@ def _ensure_git(scenes_dir):
         _git(["-C", scenes_dir, "config", "user.email", f"{u}@maya-vc.local"], cwd=scenes_dir)
 
 
+@perf_timed()
 def git_commit(scenes_dir, file_path, version, message):
     """git add + commit + tag.  Returns True on success."""
     _ensure_git(scenes_dir)
@@ -251,6 +260,7 @@ class VersionRecord:
         self.hash = hash        # short commit hash (7 chars)
 
 
+@perf_timed()
 def get_history(scenes_dir, scene_name=None):
     """Return list of VersionRecord, newest first.
 
@@ -269,46 +279,61 @@ def get_history(scenes_dir, scene_name=None):
 
     filter_base = (scene_name or "").lower()
 
-    # list ALL tags sorted by version number (descending), then filter in Python.
-    # Sort by tag name instead of creation date so the order stays stable
-    # when a tag is force-updated (Save and Load amends the commit behind it).
-    # Avoid git's glob pattern matching which has unreliable escaping on Windows.
-    tag_list = _git(["tag", "-l", "--sort=-version:refname"], cwd=scenes_dir)
-    if not tag_list:
+    # --- 1) Single git call: all tag metadata ---
+    refs_raw = _git([
+        "for-each-ref",
+        "--sort=-version:refname",
+        "--format=%(refname:short)|%(objectname:short)|%(contents:subject)",
+        "refs/tags",
+    ], cwd=scenes_dir)
+
+    if not refs_raw:
         return []
 
-    records = []
-    for tag in tag_list.split("\n"):
-        tag = tag.strip()
-        if not tag:
+    # Parse: tag -> (hash, message)
+    tag_meta = {}  # tag -> (hash, message)
+    for line in refs_raw.split("\n"):
+        line = line.strip()
+        if not line:
             continue
-        # Only accept tags matching {base}_vNNN format, skip old-style vNNN tags
+        parts = line.split("|", 2)
+        if len(parts) >= 3:
+            tag_meta[parts[0]] = (parts[1][:7], parts[2].strip())
+
+    # --- 2) Match tags to files on disk (no extra git calls) ---
+    # Scan scenes_dir once. Map "base_vNNN" -> filename for quick lookup.
+    disk_files = {}  # lowercased "base_vnnn" -> actual filename
+    try:
+        for f in os.listdir(scenes_dir):
+            low = f.lower()
+            if low.endswith((".ma", ".mb")):
+                # Extract {base}_vNNN part from filename (strip extension)
+                root, _ = os.path.splitext(low)
+                disk_files[root] = f
+    except Exception:
+        pass
+
+    records = []
+    for tag, (commit_hash, msg) in tag_meta.items():
         tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
         if not tag_ver:
             continue
         if filter_base and tag_ver.group(1).lower() != filter_base:
             continue
 
-        # Get hash + message from git log (not date — we use file mtime)
-        info = _git(["log", "-1", "--format=%h|%s", "--name-only", tag, "--"],
-                    cwd=scenes_dir)
-        date_str = ""
-        msg = ""
-        commit_hash = ""
-        tag_file = ""
-        if info and "|" in info:
-            lines = info.split("\n")
-            parts = lines[0].split("|", 1)
-            if len(parts) >= 2:
-                commit_hash = parts[0][:7]
-                msg = parts[1]
-            for ln in lines[1:]:
-                if ln.lower().endswith((".ma", ".mb")):
-                    tag_file = ln.strip()
-                    break
+        # File name: look up on disk first, fall back to git ls-tree
+        tag_file = disk_files.get(tag.lower(), "")
+        if not tag_file:
+            # Rare: file not on disk, one-off git ls-tree
+            ls = _git(["ls-tree", "-r", "--name-only", tag], cwd=scenes_dir)
+            if ls:
+                for f in ls.split("\n"):
+                    if f.lower().endswith((".ma", ".mb")):
+                        tag_file = f.strip()
+                        break
 
-        # Date: use the scene file's mtime on disk (ground truth),
-        # fall back to tag file mtime
+        # Date: scene file mtime > tag ref mtime
+        date_str = ""
         if tag_file:
             file_path = os.path.join(scenes_dir, tag_file)
             if os.path.isfile(file_path):
@@ -321,7 +346,7 @@ def get_history(scenes_dir, scene_name=None):
                     os.path.getmtime(ref_path)).strftime("%Y-%m-%d %H:%M")
 
         records.append(VersionRecord(
-            tag=tag, date=date_str, message=msg.strip(), file=tag_file, hash=commit_hash,
+            tag=tag, date=date_str, message=msg, file=tag_file, hash=commit_hash,
         ))
 
     return records
@@ -355,6 +380,7 @@ def delete_version(scenes_dir, tag, filename):
     return True
 
 
+@perf_timed()
 def load_version(scenes_dir, tag):
     """Checkout scene file at tag into scenes/ and open in Maya."""
     # find the .ma/.mb file
@@ -394,7 +420,8 @@ def load_version(scenes_dir, tag):
     if result == "Save and Load":
         cur = cmds.file(q=True, sn=True)
         try:
-            mel.eval("file -save -f")
+            with perf_scope("maya_file_save"):
+                mel.eval("file -save -f")
             cmds.warning(f"MayaVC: saved to {cur}")
         except Exception as e:
             cmds.warning(f"MayaVC: save failed - {e}")
@@ -413,7 +440,8 @@ def load_version(scenes_dir, tag):
     # Only fall back to git extraction if the file doesn't exist on disk.
     checkout_path = os.path.join(scenes_dir, target)
     if os.path.isfile(checkout_path):
-        cmds.file(checkout_path, open=True, force=True)
+        with perf_scope("maya_file_open"):
+            cmds.file(checkout_path, open=True, force=True)
         return True
 
     # Rare: file not on disk — extract from git
@@ -444,7 +472,8 @@ def load_version(scenes_dir, tag):
         f.write(content_bytes)
 
     try:
-        cmds.file(checkout_path, open=True, force=True)
+        with perf_scope("maya_file_open"):
+            cmds.file(checkout_path, open=True, force=True)
         return True
     except Exception:
         try:
