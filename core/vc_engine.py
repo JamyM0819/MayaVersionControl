@@ -241,8 +241,54 @@ def git_commit(scenes_dir, file_path, version, message):
         cmds.warning("MayaVC: git commit failed")
         return False
 
-    # tag
-    _git(["tag", "-f", tag], cwd=scenes_dir)
+    # tag (annotated — store full multiline message; get_history reads %(contents))
+    _git(["tag", "-f", "-a", "-m", full_msg, tag], cwd=scenes_dir)
+    return True
+
+
+@perf_timed()
+def git_amend_commit(scenes_dir, file_path, version, append_message):
+    """Append a commit message to an existing tag WITHOUT bumping the version number.
+
+    This is used by "Save with Commit and Load" — the user's in-progress edits
+    are saved and committed to the current tag, building up a log of what
+    happened at each step.  The tag is force-updated to point to the new commit.
+
+    Returns True on success.
+    """
+    _ensure_git(scenes_dir)
+    fname = os.path.basename(file_path)
+    base, _, _ = _parse_ver(fname)
+    tag = f"{base}_v{version:03d}"
+
+    # Pull the existing tag annotation body (full multiline contents)
+    existing = _git(["for-each-ref", "--format=%(contents)",
+                     f"refs/tags/{tag}"], cwd=scenes_dir)
+    existing = (existing or "").strip()
+
+    # Append the new record — timestamped so the Message column reads as a log
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    append_line = f"[{now_str}] {append_message.strip()}"
+
+    if existing:
+        full_msg = f"{existing}\n{append_line}"
+    else:
+        # Existing annotation might start with the old subject line;
+        # prepend a tag header so the first line is always meaningful.
+        full_msg = f"{tag} | {append_line}"
+
+    out = _git(["add", fname], cwd=scenes_dir)
+    if out is None:
+        cmds.warning("MayaVC: git add failed")
+        return False
+
+    r = _git(["commit", "--allow-empty", "-m", full_msg], cwd=scenes_dir)
+    if r is None:
+        cmds.warning("MayaVC: git commit failed")
+        return False
+
+    # tag (annotated — so get_history can read %(contents) from the tag itself)
+    _git(["tag", "-f", "-a", "-m", full_msg, tag], cwd=scenes_dir)
     return True
 
 
@@ -280,25 +326,44 @@ def get_history(scenes_dir, scene_name=None):
     filter_base = (scene_name or "").lower()
 
     # --- 1) Single git call: all tag metadata ---
+    # Use %(contents) so multiline messages from git_amend_commit are captured.
+    # Each tag entry starts with "refname|hash|" on its own line; subsequent
+    # lines until the next "refname|hash|" pattern are the message body.
     refs_raw = _git([
         "for-each-ref",
         "--sort=-version:refname",
-        "--format=%(refname:short)|%(objectname:short)|%(contents:subject)",
+        "--format=%(refname:short)|%(objectname:short)|%(contents)",
         "refs/tags",
     ], cwd=scenes_dir)
 
     if not refs_raw:
         return []
 
-    # Parse: tag -> (hash, message)
-    tag_meta = {}  # tag -> (hash, message)
+    # Parse: tag -> (hash, message).  State machine because %(contents) can
+    # span multiple lines.
+    tag_meta = {}      # tag -> (hash, message)
+    tag_entry = re.compile(r'^(.+?)\|([a-f0-9]{7,})\|(.*)$')
+    current_tag = None
+    current_hash = ""
+    current_lines = []
     for line in refs_raw.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|", 2)
-        if len(parts) >= 3:
-            tag_meta[parts[0]] = (parts[1][:7], parts[2].strip())
+        m = tag_entry.match(line)
+        if m:
+            # flush previous entry
+            if current_tag is not None:
+                msg = "\n".join(current_lines).strip()
+                tag_meta[current_tag] = (current_hash, msg)
+            # start new entry
+            current_tag = m.group(1)
+            current_hash = m.group(2)[:7]
+            current_lines = [m.group(3)]
+        else:
+            # continuation of previous message body
+            current_lines.append(line)
+    # flush last entry
+    if current_tag is not None:
+        msg = "\n".join(current_lines).strip()
+        tag_meta[current_tag] = (current_hash, msg)
 
     # --- 2) Match tags to files on disk (no extra git calls) ---
     # Scan scenes_dir once. Map "base_vNNN" -> filename for quick lookup.
@@ -410,24 +475,50 @@ def load_version(scenes_dir, tag):
     result = cmds.confirmDialog(
         title="Load Historical Version",
         message=f"Load {tag}: {target}?\n\nSave current scene first?",
-        button=["Save and Load", "Load without Saving", "Cancel"],
+        button=["Save w/ Commit and Load", "Save and Load",
+                "Load without Saving", "Cancel"],
         defaultButton="Save and Load",
         cancelButton="Cancel",
         dismissString="Cancel",
     )
     if result == "Cancel":
         return False
-    if result == "Save and Load":
+
+    if result in ("Save and Load", "Save w/ Commit and Load"):
         cur = cmds.file(q=True, sn=True)
-        try:
-            with perf_scope("maya_file_save"):
-                mel.eval("file -save -f")
-            cmds.warning(f"MayaVC: saved to {cur}")
-        except Exception as e:
-            cmds.warning(f"MayaVC: save failed - {e}")
-        # Sync tag file mtime with the saved scene file so they stay aligned
-        cur_base, _, cur_ver = _parse_ver(os.path.basename(cur))
-        if cur_ver > 0:
+        cur_base, _, cur_ver = _parse_ver(os.path.basename(cur)) if cur else ("", "", 0)
+
+        if result == "Save w/ Commit and Load" and cur_ver > 0:
+            # Ask for commit message FIRST, commit button triggers save + commit
+            user_msg = cmds.promptDialog(
+                title="Commit Message",
+                message=f"Describe this save (appended to {cur_base}_v{cur_ver:03d}):",
+                button=["Commit", "Cancel"],
+                defaultButton="Commit",
+                cancelButton="Cancel",
+                dismissString="Cancel",
+            )
+            if user_msg == "Cancel":
+                return False
+            append_msg = cmds.promptDialog(q=True, text=True) or ""
+
+            # Now save
+            try:
+                with perf_scope("maya_file_save"):
+                    mel.eval("file -save -f")
+                cmds.warning(f"MayaVC: saved to {cur}")
+            except Exception as e:
+                cmds.warning(f"MayaVC: save failed - {e}")
+                return False
+
+            # Commit
+            if append_msg.strip():
+                git_amend_commit(scenes_dir, cur, cur_ver, append_msg.strip())
+                cmds.warning(f"MayaVC: commit appended to {cur_base}_v{cur_ver:03d}")
+            else:
+                cmds.warning("MayaVC: empty message — commit skipped, file saved")
+
+            # Sync tag mtime
             tag_path = os.path.join(scenes_dir, ".git", "refs", "tags",
                                     f"{cur_base}_v{cur_ver:03d}")
             if os.path.isfile(tag_path) and os.path.isfile(cur):
@@ -435,6 +526,24 @@ def load_version(scenes_dir, tag):
                     os.utime(tag_path, (os.path.getmtime(cur), os.path.getmtime(cur)))
                 except Exception:
                     pass
+        else:
+            # Plain "Save and Load": save first, then load
+            try:
+                with perf_scope("maya_file_save"):
+                    mel.eval("file -save -f")
+                cmds.warning(f"MayaVC: saved to {cur}")
+            except Exception as e:
+                cmds.warning(f"MayaVC: save failed - {e}")
+
+            # Sync tag file mtime for plain "Save and Load"
+            if cur_ver > 0:
+                tag_path = os.path.join(scenes_dir, ".git", "refs", "tags",
+                                        f"{cur_base}_v{cur_ver:03d}")
+                if os.path.isfile(tag_path) and os.path.isfile(cur):
+                    try:
+                        os.utime(tag_path, (os.path.gettime(cur), os.path.gettime(cur)))
+                    except Exception:
+                        pass
 
     # Open the target version from disk (it's already in scenes/).
     # Only fall back to git extraction if the file doesn't exist on disk.

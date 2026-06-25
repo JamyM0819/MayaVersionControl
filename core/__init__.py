@@ -6,6 +6,7 @@ from core.vc_engine import (
     dry_run_next_version,
     incremental_save,
     git_commit,
+    git_amend_commit,
     get_history,
     load_version,
     _parse_ver,
