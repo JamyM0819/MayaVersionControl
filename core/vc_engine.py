@@ -142,7 +142,7 @@ def detect_next_version(scenes_dir, base=None):
         _, ext = os.path.splitext(p)
         ext = ext.lstrip(".")
     else:
-        ext = "ma"
+        ext = "mb"
 
     current_base = _parse_ver(p)[0] if p else ""
 
@@ -227,7 +227,8 @@ def git_commit(scenes_dir, file_path, version, message):
     fname = os.path.basename(file_path)
     base, _, _ = _parse_ver(fname)
     tag = f"{base}_v{version:03d}"
-    full_msg = f"{tag}: {message.strip()}"
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    full_msg = f"[{now_str}] {message.strip()}"
 
     # add
     out = _git(["add", fname], cwd=scenes_dir)
