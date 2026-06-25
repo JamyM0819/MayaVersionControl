@@ -20,6 +20,7 @@ from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_ve
                               dry_run_next_version, git_commit)
 from core.gitignore import write_gitignore
 from core.perf_monitor import show_perf_panel
+from ui.commit_dialog import show_commit_dialog, show_amend_dialog
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +169,9 @@ def show():
     lay.addLayout(top_bar)
 
     info_label = QLabel("")
-    info_label.setStyleSheet("font-size: 11px; color: #888;")
+    info_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+    info_label.setTextFormat(Qt.RichText)
+    info_label.setCursor(Qt.PointingHandCursor)
     lay.addWidget(info_label)
 
     table = QTableWidget(0, 4)
@@ -225,7 +228,7 @@ def show():
     blay.addWidget(refresh_btn)
     lay.addLayout(blay)
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
-             "latest_only": False, "edit_mode": False}
+             "latest_only": False, "edit_mode": False, "cur_tag": None}
 
     def _visible_records(records, latest_only):
         """If latest_only, return only the highest-version record per base name."""
@@ -297,19 +300,30 @@ def show():
                         cur_tag = f"{cur_base}_v{cur_ver:03d}"
                         cur_hash = _git(["log", "-1", "--format=%h", cur_tag, "--"], cwd=d) or ""
                         info_label.setText(
-                            f"Current: {cur_tag}  |  commit: {cur_hash or '---'}"
+                            f'<a href="locate" style="color:#27AE60; text-decoration:none;">'
+                            f'Current: {cur_tag}  |  commit: {cur_hash or "---"}'
+                            f'</a>'
                         )
+                        state["cur_tag"] = cur_tag
                     else:
                         info_label.setText("Current: (unsaved)")
+                        state["cur_tag"] = None
             except Exception:
                 info_label.setText("")
+                state["cur_tag"] = None
         except Exception as e:
             label.setText(f"Error: {e}")
 
         visible = _visible_records(state["records"], state["latest_only"])
         state["visible"] = visible
+        cur_tag = state.get("cur_tag")
+        cur_row = None
         table.setRowCount(len(visible))
         for i, r in enumerate(visible):
+            is_current = cur_tag and r.tag == cur_tag
+            if is_current:
+                cur_row = i
+
             tag_item = QTableWidgetItem(r.tag or "-")
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
@@ -325,9 +339,19 @@ def show():
             msg_item.setData(Qt.UserRole, full_msg)
             table.setItem(i, 3, msg_item)
 
+            # Highlight current version row
+            if is_current:
+                for col in range(4):
+                    cell = table.item(i, col)
+                    cell.setBackground(QColor("#27AE60"))
+                    cell.setForeground(QColor("#FFFFFF"))
+
             # Expand row height for expanded (▲) messages
             if "\n" in folded:
                 table.resizeRowToContents(i)
+
+        # Auto-scroll to current version row
+        _scroll_to_current()
 
     def _collapsed_for_tag(tag, full_msg):
         """Return the display text for message column, respecting collapse state."""
@@ -341,6 +365,18 @@ def show():
             # First line with ▲ arrow, rest indented
             parts = ["▲ " + lines[0]] + ["   " + ln for ln in lines[1:]]
             return "\n".join(parts)
+
+    def _scroll_to_current():
+        """Scroll to and select the current version row, if visible."""
+        cur_tag = state.get("cur_tag")
+        if not cur_tag:
+            return
+        visible = state.get("visible", [])
+        for i, r in enumerate(visible):
+            if r.tag == cur_tag:
+                table.selectRow(i)
+                table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
+                break
 
     def on_msg_click(item):
         """Toggle collapse/expand for message column on double-click."""
@@ -451,18 +487,12 @@ def show():
             cmds.warning("MayaVC: current file has no version — use incremental save first")
             return
 
-        # Ask for commit message
-        user_msg = cmds.promptDialog(
-            title="Save w/ Commit",
-            message=f"Describe this save (appended to {cur_base}_v{cur_ver:03d}):",
-            button=["Commit", "Cancel"],
-            defaultButton="Commit",
-            cancelButton="Cancel",
-            dismissString="Cancel",
-        )
-        if user_msg == "Cancel":
+        tag = f"{cur_base}_v{cur_ver:03d}"
+
+        # Multi-line amend dialog
+        append_msg, ok = show_amend_dialog(tag, parent=win)
+        if not ok:
             return
-        append_msg = cmds.promptDialog(q=True, text=True) or ""
 
         if not append_msg.strip():
             cmds.warning("MayaVC: empty message — commit skipped")
@@ -477,7 +507,7 @@ def show():
 
         # Commit
         if git_amend_commit(state["scenes_dir"], cur, cur_ver, append_msg.strip()):
-            cmds.warning(f"MayaVC: commit appended to {cur_base}_v{cur_ver:03d}")
+            cmds.warning(f"MayaVC: commit appended to {tag}")
             do_refresh()
         else:
             cmds.warning("MayaVC: commit failed")
@@ -521,36 +551,29 @@ def show():
                 do_refresh()
 
     def on_inc_save():
-        """Incremental save: save-as new versioned file + commit with user message."""
+        """Incremental save + commit dialog + git commit. Same as shelf_main."""
         import maya.cmds as cmds
-        import maya.mel as mel
 
         d = state["scenes_dir"]
         if not d or not os.path.isdir(d):
             cmds.warning("MayaVC: Cannot determine scenes directory.")
             return
 
+        # 1. Preview next version (does NOT save / create anything yet)
         base, ext, next_ver, _ = dry_run_next_version(d)
 
-        # Ask for commit message
-        user_msg = cmds.promptDialog(
-            title="Incremental Save",
-            message=f"Save as {base}_v{next_ver:03d}.{ext}\n\nCommit message:",
-            button=["Commit", "Cancel"],
-            defaultButton="Commit",
-            cancelButton="Cancel",
-            dismissString="Cancel",
+        # 2. Commit dialog with editable base name + live version preview
+        parent = win  # parent to Maya main window via our existing win widget
+
+        new_base, new_ver, msg, ok = show_commit_dialog(
+            base, next_ver, ext, parent=parent, scenes_dir=d,
         )
-        if user_msg == "Cancel":
-            return
-        msg = cmds.promptDialog(q=True, text=True) or ""
-
-        if not msg.strip():
-            cmds.warning("MayaVC: empty message — commit skipped")
+        if not ok:
+            cmds.warning("MayaVC: Commit cancelled — nothing saved.")
             return
 
-        # Save-as to new versioned file
-        new_path = os.path.join(d, f"{base}_v{next_ver:03d}.{ext}")
+        # 3. Save-as to new versioned file
+        new_path = os.path.join(d, f"{new_base}_v{new_ver:03d}.{ext}")
         ft = "mayaAscii" if ext == "ma" else "mayaBinary"
         try:
             cmds.file(rename=new_path)
@@ -559,9 +582,9 @@ def show():
             cmds.warning(f"MayaVC: save failed - {e}")
             return
 
-        # Git commit + tag
-        if git_commit(d, new_path, next_ver, msg):
-            cmds.warning(f"MayaVC: v{next_ver:03d} committed - {msg}")
+        # 4. Git commit + tag
+        if git_commit(d, new_path, new_ver, msg):
+            cmds.warning(f"MayaVC: v{new_ver:03d} committed - {msg}")
             do_refresh()
         else:
             cmds.warning("MayaVC: Commit failed.")
@@ -608,6 +631,7 @@ def show():
     delete_selected_btn.clicked.connect(on_delete_selected)
     filter_toggle_btn.clicked.connect(on_toggle)
     latest_only_btn.clicked.connect(on_latest_only)
+    info_label.linkActivated.connect(lambda: _scroll_to_current())
     table.itemSelectionChanged.connect(on_sel)
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
