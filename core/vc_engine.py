@@ -60,9 +60,9 @@ def _is_temp_dir(d):
 def get_plugin_repo_hash():
     """Return short version identifier for the MayaVC plugin itself.
 
-    1. Read cached .mayavc/plugin_version in the plugin package directory.
-    2. Fall back to ``git rev-parse HEAD`` (subprocess, no _git helper).
-    3. Cache result for future calls.
+    1. Try ``git rev-parse HEAD`` first (subprocess, no _git helper).
+    2. Fall back to cached .mayavc/plugin_version in the plugin directory.
+    3. Cache the git result for future fallback calls.
     4. Return empty string if nothing works.
     """
     import sys
@@ -70,12 +70,8 @@ def get_plugin_repo_hash():
         try:
             if not os.path.isdir(p) or not os.path.isfile(os.path.join(p, "shelf_main.py")):
                 continue
-            # Priority 1: cached version file
             ver_file = os.path.join(p, ".mayavc", "plugin_version")
-            if os.path.isfile(ver_file):
-                with open(ver_file, "r", encoding="utf-8") as fh:
-                    return fh.read().strip()[:7]
-            # Priority 2: git fallback
+            # Priority 1: git (always current)
             kwargs = {}
             if platform.system() == "Windows":
                 kwargs["creationflags"] = 0x08000000
@@ -87,6 +83,7 @@ def get_plugin_repo_hash():
                 )
                 if r.returncode == 0 and r.stdout.strip():
                     h = r.stdout.strip()[:7]
+                    # Update cache
                     try:
                         os.makedirs(os.path.join(p, ".mayavc"), exist_ok=True)
                         with open(ver_file, "w", encoding="utf-8") as fh:
@@ -96,6 +93,10 @@ def get_plugin_repo_hash():
                     return h
             except Exception:
                 pass
+            # Priority 2: cached version file (git not available)
+            if os.path.isfile(ver_file):
+                with open(ver_file, "r", encoding="utf-8") as fh:
+                    return fh.read().strip()[:7]
             break
         except Exception:
             pass
