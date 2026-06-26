@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QLabel, QAbstractItemView,
+    QToolButton, QMenu, QLineEdit, QWidgetAction, QFileDialog,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
@@ -51,6 +52,42 @@ def _save_collapsed():
         cmds.optionVar(sv=("MayaVC_collapsed", ";;".join(parts)))
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Persistent recent projects (survives Maya sessions)
+# ---------------------------------------------------------------------------
+
+
+def _load_recent_projects():
+    """Load recent project paths from Maya optionVars. Returns list of paths."""
+    try:
+        import maya.cmds as cmds
+        raw = cmds.optionVar(q="MayaVC_recent_projects") or ""
+        paths = [p for p in raw.split(";;") if p and os.path.isdir(p)]
+        return paths
+    except Exception:
+        return []
+
+
+def _save_recent_projects(paths):
+    """Persist recent project paths to Maya optionVars (max 10)."""
+    try:
+        import maya.cmds as cmds
+        deduped = list(dict.fromkeys(paths))[:10]
+        cmds.optionVar(sv=("MayaVC_recent_projects", ";;".join(deduped)))
+    except Exception:
+        pass
+
+
+def _add_recent_project(path):
+    """Add a path to the front of recent projects list and persist."""
+    paths = _load_recent_projects()
+    path = os.path.normpath(os.path.abspath(path))
+    if path in paths:
+        paths.remove(path)
+    paths.insert(0, path)
+    _save_recent_projects(paths)
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +197,130 @@ def show():
     lay.setSpacing(4)
 
     top_bar = QHBoxLayout()
+
+    # ---- Set Project (Maya-style: label + dropdown + folder icon) ----
+    proj_wrapper = QVBoxLayout()
+    proj_wrapper.setSpacing(1)
+    proj_label = QLabel("Set Project")
+    proj_label.setStyleSheet("font-size: 10px; color: #999; padding-left: 2px;")
+    proj_wrapper.addWidget(proj_label)
+
+    set_project_btn = QToolButton()
+    set_project_btn.setPopupMode(QToolButton.MenuButtonPopup)
+    set_project_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+    set_project_btn.setMinimumWidth(160)
+    set_project_menu = QMenu(set_project_btn)
+    set_project_btn.setMenu(set_project_menu)
+
+    # Build the popup menu (rebuilt each time it's about to show)
+    def _build_project_menu():
+        set_project_menu.clear()
+
+        # -- Search/filter bar at top --
+        search_action = QWidgetAction(set_project_menu)
+        search_box = QLineEdit()
+        search_box.setPlaceholderText("Filter...")
+        search_box.setClearButtonEnabled(True)
+        search_action.setDefaultWidget(search_box)
+        set_project_menu.addAction(search_action)
+
+        # -- Recent projects section --
+        recent = _load_recent_projects()
+        current_dir = state.get("scenes_dir", "")
+        # Build list of (label, path) — current path always first
+        items = []
+        if current_dir and os.path.isdir(current_dir):
+            items.append((os.path.basename(current_dir) or current_dir, current_dir))
+        for p in recent:
+            p = os.path.normpath(p)
+            if p and os.path.isdir(p) and p != current_dir:
+                items.append((os.path.basename(p) or p, p))
+        items = list(dict.fromkeys(items))  # dedup keeping order
+
+        # Filter box narrows the menu items
+        def _filter_menu(text):
+            filt = text.lower()
+            for action in set_project_menu.actions():
+                if action is search_action:
+                    continue
+                if action.isSeparator():
+                    action.setVisible(not filt)
+                else:
+                    action.setVisible(not filt or filt in action.text().lower())
+
+        search_box.textChanged.connect(_filter_menu)
+
+        if items:
+            if current_dir and os.path.isdir(current_dir):
+                set_project_menu.addSection("Current")
+                for label, path in items[:1]:
+                    a = set_project_menu.addAction(f"  {label}")
+                    a.setToolTip(path)
+                    a.triggered.connect(lambda checked=False, p=path: _on_set_project(p))
+            rest = items[1:] if (current_dir and os.path.isdir(current_dir)) else items
+            if rest:
+                set_project_menu.addSection("Recent")
+                for label, path in rest:
+                    a = set_project_menu.addAction(f"  {label}")
+                    a.setToolTip(path)
+                    a.triggered.connect(lambda checked=False, p=path: _on_set_project(p))
+
+        set_project_menu.addSeparator()
+
+        # -- Bottom actions --
+        browse_a = set_project_menu.addAction("📂  Browse...")
+        browse_a.triggered.connect(_on_browse_project)
+        snap_a = set_project_menu.addAction("📍  Use Current Maya Project")
+        snap_a.triggered.connect(_on_use_current_maya_project)
+
+    set_project_menu.aboutToShow.connect(_build_project_menu)
+
+    def _update_project_button_text():
+        d = state.get("scenes_dir", "")
+        if d and os.path.isdir(d):
+            set_project_btn.setText(os.path.basename(d) or d)
+            set_project_btn.setToolTip(d)
+        else:
+            set_project_btn.setText("(none)")
+            set_project_btn.setToolTip("")
+
+    def _on_set_project(path):
+        if not path or not os.path.isdir(path):
+            import maya.cmds as cmds
+            cmds.warning("MayaVC: Project directory not found.")
+            return
+        state["scenes_dir"] = path
+        _add_recent_project(path)
+        _update_project_button_text()
+        do_refresh()
+
+    def _on_browse_project():
+        d = QFileDialog.getExistingDirectory(
+            win, "Select Scenes Directory",
+            state.get("scenes_dir", os.getcwd()),
+            QFileDialog.ShowDirsOnly,
+        )
+        if d:
+            scenes = os.path.join(d, "scenes")
+            if os.path.isdir(scenes):
+                d = scenes
+            _on_set_project(d)
+
+    def _on_use_current_maya_project():
+        import maya.cmds as cmds
+        try:
+            d = get_scenes_dir()
+            if d and os.path.isdir(d):
+                _on_set_project(d)
+            else:
+                cmds.warning("MayaVC: Cannot determine current Maya project.")
+        except Exception as e:
+            cmds.warning(f"MayaVC: {e}")
+
+    proj_wrapper.addWidget(set_project_btn)
+    top_bar.addLayout(proj_wrapper)
+    top_bar.addSpacing(8)
+
     label = QLabel("Project: (click Refresh)")
     top_bar.addWidget(label, stretch=1)
     collapse_all_btn = QPushButton("全部收起")
@@ -238,6 +399,8 @@ def show():
     lay.addLayout(blay)
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
              "latest_only": False, "edit_mode": False, "cur_tag": None}
+
+    _update_project_button_text()
 
     def _visible_records(records, latest_only):
         """If latest_only, return only the highest-version record per base name."""
