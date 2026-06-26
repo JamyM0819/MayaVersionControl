@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QLabel, QAbstractItemView,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
@@ -356,16 +356,20 @@ def show():
         # Auto-scroll to current version row
         _scroll_to_current()
 
+        # Deferred rewrap: column width may not be final during initial layout.
+        QTimer.singleShot(0, _rewrap_all_messages)
+
     def _msg_col_chars():
         """Return chars that fit in the Message column at current width."""
         fm = table.fontMetrics()
         col_w = table.columnWidth(3)
-        pad = 28  # cell padding + scrollbar margin
-        avail = max(30, col_w - pad)
-        avg = fm.averageCharWidth()
-        if avg <= 0:
-            avg = 7
-        return max(20, int(avail / avg))
+        # Use widest CJK char width — Chinese chars are ~2x as wide as Latin
+        cjk_w = fm.horizontalAdvance("█")
+        if cjk_w <= 0:
+            cjk_w = fm.averageCharWidth() or 7
+        pad = 12
+        avail = max(10, col_w - pad)
+        return max(15, int(avail / cjk_w))
 
     def _split_ts_body(line):
         """Split a message line into (timestamp_prefix, body_text).
@@ -378,15 +382,28 @@ def show():
             return m.group(1), line[m.end():]
         return None, line
 
+    def _visual_width(s):
+        """Return visual char width — CJK/fullwidth chars count as 2."""
+        w = 0
+        for ch in s:
+            if '一' <= ch <= '鿿' or '　' <= ch <= '〿':
+                w += 2
+            elif '＀' <= ch <= '￯':
+                w += 2
+            else:
+                w += 1
+        return w
+
     def _wrap_body(body, wrap_chars, indent_str):
         """Wrap body text to fit column width, with indent_str on every line."""
+        indent_vis = _visual_width(indent_str)
+        w = max(10, wrap_chars - indent_vis)
         lines = body.split("\n")
         out = []
         for ln in lines:
             if not ln.strip():
                 out.append(indent_str)
                 continue
-            w = max(20, wrap_chars - len(indent_str))
             wrapped = _textwrap.wrap(ln, width=w)
             out.extend(indent_str + ww for ww in wrapped)
         return "\n".join(out)
