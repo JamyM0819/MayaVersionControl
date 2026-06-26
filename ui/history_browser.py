@@ -163,6 +163,8 @@ def show():
     top_bar = QHBoxLayout()
     label = QLabel("Project: (click Refresh)")
     top_bar.addWidget(label, stretch=1)
+    collapse_all_btn = QPushButton("全部收起")
+    top_bar.addWidget(collapse_all_btn)
     latest_only_btn = QPushButton("只看最新")
     top_bar.addWidget(latest_only_btn)
     filter_toggle_btn = QPushButton("只看当前")
@@ -737,9 +739,22 @@ def show():
             latest_only_btn.setText("历史版本")
             do_refresh(latest_only=True)
 
+    def on_collapse_all():
+        """Collapse all expanded multi-commit messages."""
+        # Set all tags to collapsed
+        visible = state.get("visible", [])
+        for r in visible:
+            full_msg = r.message or ""
+            if "\n" in full_msg:
+                _COLLAPSED_STATE[r.tag] = True
+        _save_collapsed()
+        # Just rewrap – do_refresh would also work but rewrap is lighter
+        _rewrap_all_messages()
+
     refresh_btn.clicked.connect(do_refresh)
     edit_btn.clicked.connect(on_edit)
     delete_selected_btn.clicked.connect(on_delete_selected)
+    collapse_all_btn.clicked.connect(on_collapse_all)
     filter_toggle_btn.clicked.connect(on_toggle)
     latest_only_btn.clicked.connect(on_latest_only)
     info_label.linkActivated.connect(lambda: _scroll_to_current())
