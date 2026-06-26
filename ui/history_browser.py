@@ -399,11 +399,14 @@ def show():
         overlap vertically — the timestamp is always on its own short line.
         """
         if "\n" not in full_msg:
-            # Single commit — no arrow, just timestamp + body inline
+            # Single commit — no arrow, timestamp on own line, body wrapped below
             ts, body = _split_ts_body(full_msg)
             if ts:
+                body_text = _wrap_body(body, wrap_chars, "   ")
+                if body_text.strip():
+                    return ts.rstrip() + "\n" + body_text
                 return ts + body
-            return full_msg
+            return _wrap_body(full_msg, wrap_chars, "")
 
         # Multi-commit (git_amend_commit appends)
         records = full_msg.split("\n")
@@ -414,9 +417,13 @@ def show():
                 # Only show first record, single-line summary
                 arrow = "▼ "
                 if ts:
-                    blocks.append(arrow + ts + body)
+                    body_text = _wrap_body(body, wrap_chars, "      ")
+                    if body_text.strip():
+                        blocks.append(arrow + ts.rstrip() + "\n" + body_text)
+                    else:
+                        blocks.append(arrow + ts + body)
                 else:
-                    blocks.append(arrow + rec)
+                    blocks.append(arrow + _wrap_body(rec, wrap_chars, "      "))
                 break  # one record in collapsed mode
             else:
                 # Expanded: each record gets its own ts line + body block
