@@ -181,7 +181,7 @@ def show():
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table.setAlternatingRowColors(True)
+    table.setAlternatingRowColors(False)  # we manage row colours ourselves
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
@@ -197,6 +197,13 @@ def show():
 
     # Enable click-to-sort on column headers
     table.setSortingEnabled(True)
+
+    # Two group colours that alternate per-base-name when rows are sorted by
+    # Version (i.e. grouped by base name).  Cleared on Date / Message sort.
+    _GROUP_COLOURS = [
+        QColor("#474747"),  # warm ivory
+        QColor("#383838"),  # cool grey
+    ]
 
     blay = QHBoxLayout()
     # left group: save actions
@@ -257,6 +264,9 @@ def show():
             state["latest_only"] = latest_only
 
         state["records"] = []
+        # Temporarily disable sorting while we rebuild the table — then
+        # re-enable it so Qt applies the current sort indicator on its own.
+        table.setSortingEnabled(False)
         table.setRowCount(0)
         label.setText("Loading...")
         info_label.setText("")
@@ -326,6 +336,10 @@ def show():
         state["visible"] = visible
         cur_tag = state.get("cur_tag")
         cur_row = None
+
+        # --- group colours ---
+        # Called AFTER table items exist so _apply_group_colours can write
+        # to actual cells.
         table.setRowCount(len(visible))
         for i, r in enumerate(visible):
             is_current = cur_tag and r.tag == cur_tag
@@ -335,7 +349,9 @@ def show():
             tag_item = QTableWidgetItem(r.tag or "-")
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
-            table.setItem(i, 1, QTableWidgetItem(r.date or ""))
+            date_item = QTableWidgetItem(r.date or "")
+            date_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(i, 1, date_item)
 
             # Message column: fold multi-line, store full as UserRole
             full_msg = r.message or ""
@@ -354,6 +370,13 @@ def show():
             # Expand row height for expanded (▲) messages
             if "\n" in folded:
                 table.resizeRowToContents(i)
+
+        # --- group colours (deferred until Qt applies the sort indicator) ---
+        QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag))
+
+        # Re-enable sorting AFTER items are in place — this makes Qt apply the
+        # current sort indicator to the fresh data without losing cell content.
+        table.setSortingEnabled(True)
 
         # Auto-scroll to current version row
         _scroll_to_current()
@@ -454,6 +477,61 @@ def show():
                     blocks.append(arrow + _wrap_body(rec, wrap_chars, "      "))
         return "\n".join(blocks)
 
+    def _apply_group_colours(visible, cur_tag, sort_section=-1):
+        """Paint alternating backgrounds per base-name group when sorted by
+        Version (section 0).  Disable group colours on Date/Message sort."""
+
+        if not visible:
+            return
+        ver_re = re.compile(r'^(.+)_v(\d{3,})$')
+
+        # ------ decide whether group colours should be ON ------
+        if sort_section < 0:
+            sort_section = table.horizontalHeader().sortIndicatorSection()
+        row_count = table.rowCount()
+        if row_count == 0:
+            return
+
+        if sort_section == 0:
+            # Walk table rows top-to-bottom and collect the *first* occurrence
+            # of each base name — this gives us a stable bases_in_order sequence
+            # regardless of ascending/descending sort direction.
+            seen = set()
+            bases_in_order = []
+            for i in range(row_count):
+                tag_item = table.item(i, 0)
+                tag = tag_item.text() if tag_item else ""
+                m = ver_re.match(tag)
+                base = m.group(1) if m else tag
+                if base not in seen:
+                    seen.add(base)
+                    bases_in_order.append(base)
+            base_order = {b: idx for idx, b in enumerate(bases_in_order)}
+
+            for i in range(row_count):
+                tag_item = table.item(i, 0)
+                tag = tag_item.text() if tag_item else ""
+                if cur_tag and tag == cur_tag:
+                    continue
+                m = ver_re.match(tag)
+                base = m.group(1) if m else tag
+                c = _GROUP_COLOURS[base_order.get(base, 0) % len(_GROUP_COLOURS)]
+                for col in range(3):
+                    cell = table.item(i, col)
+                    if cell:
+                        cell.setBackground(c)
+        else:
+            # Date (1) or Message (2) sort — clear all non-current backgrounds
+            for i in range(row_count):
+                tag_item = table.item(i, 0)
+                tag = tag_item.text() if tag_item else ""
+                if cur_tag and tag == cur_tag:
+                    continue
+                for col in range(3):
+                    cell = table.item(i, col)
+                    if cell:
+                        cell.setBackground(QColor(255, 255, 255, 0))  # transparent
+
     def _rewrap_all_messages():
         """Re-wrap all visible message texts for current column width."""
         visible = state.get("visible")
@@ -471,6 +549,16 @@ def show():
     def _on_msg_col_resized(col, old_w, new_w):
         if col == 2 and new_w != old_w:
             _rewrap_all_messages()
+
+    def _on_sort_changed(section, order):
+        """When the user sorts by Date (1) or Message (2), clear group colours.
+        When they sort back to Version (0), re-apply them after Qt has
+        reshuffled the table rows."""
+        visible = state.get("visible")
+        cur_tag = state.get("cur_tag")
+        if visible:
+            # Qt sorts asynchronously — defer so table rows are in final order
+            QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag, sort_section=section))
 
     def _collapsed_for_tag(tag, full_msg, wrap_chars=None):
         """Return the display text for message column, respecting collapse state."""
@@ -759,6 +847,7 @@ def show():
     latest_only_btn.clicked.connect(on_latest_only)
     info_label.linkActivated.connect(lambda: _scroll_to_current())
     hdr.sectionResized.connect(_on_msg_col_resized)
+    hdr.sortIndicatorChanged.connect(_on_sort_changed)
     table.itemSelectionChanged.connect(on_sel)
     load_btn.clicked.connect(on_load)
     folder_btn.clicked.connect(on_folder)
