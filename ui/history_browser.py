@@ -176,8 +176,8 @@ def show():
     info_label.setCursor(Qt.PointingHandCursor)
     lay.addWidget(info_label)
 
-    table = QTableWidget(0, 4)
-    table.setHorizontalHeaderLabels(["Version", "Hash", "Date", "Message"])
+    table = QTableWidget(0, 3)
+    table.setHorizontalHeaderLabels(["Version", "Date", "Message"])
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -186,13 +186,11 @@ def show():
     hdr = table.horizontalHeader()
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
     hdr.setSectionResizeMode(1, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(2, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(3, QHeaderView.Stretch)  # fill remaining width; resize triggers rewrap
+    hdr.setSectionResizeMode(2, QHeaderView.Stretch)  # fill remaining width; resize triggers rewrap
     # Default column widths
     table.setColumnWidth(0, 150)
-    table.setColumnWidth(1, 80)
-    table.setColumnWidth(2, 140)
-    table.setColumnWidth(3, 300)
+    table.setColumnWidth(1, 140)
+    table.setColumnWidth(2, 300)
     # Disable native word-wrap on Message column — we handle wrapping ourselves
     table.setWordWrap(False)
     lay.addWidget(table, stretch=1)
@@ -337,21 +335,18 @@ def show():
             tag_item = QTableWidgetItem(r.tag or "-")
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
-            hash_item = QTableWidgetItem(r.hash or "")
-            hash_item.setTextAlignment(Qt.AlignCenter)
-            table.setItem(i, 1, hash_item)
-            table.setItem(i, 2, QTableWidgetItem(r.date or ""))
+            table.setItem(i, 1, QTableWidgetItem(r.date or ""))
 
             # Message column: fold multi-line, store full as UserRole
             full_msg = r.message or ""
             folded = _collapsed_for_tag(r.tag, full_msg)
             msg_item = QTableWidgetItem(folded)
             msg_item.setData(Qt.UserRole, full_msg)
-            table.setItem(i, 3, msg_item)
+            table.setItem(i, 2, msg_item)
 
             # Highlight current version row
             if is_current:
-                for col in range(4):
+                for col in range(3):
                     cell = table.item(i, col)
                     cell.setBackground(QColor("#27AE60"))
                     cell.setForeground(QColor("#FFFFFF"))
@@ -369,7 +364,7 @@ def show():
     def _msg_col_chars():
         """Return chars that fit in the Message column at current width."""
         fm = table.fontMetrics()
-        col_w = table.columnWidth(3)
+        col_w = table.columnWidth(2)
         # Use widest CJK char width — Chinese chars are ~2x as wide as Latin
         cjk_w = fm.horizontalAdvance("█")
         if cjk_w <= 0:
@@ -468,13 +463,13 @@ def show():
         for i, r in enumerate(visible):
             full_msg = r.message or ""
             new_text = _collapsed_for_tag(r.tag, full_msg, wrap_chars=w)
-            item = table.item(i, 3)
+            item = table.item(i, 2)
             if item and item.text() != new_text:
                 item.setText(new_text)
                 table.resizeRowToContents(i)
 
     def _on_msg_col_resized(col, old_w, new_w):
-        if col == 3 and new_w != old_w:
+        if col == 2 and new_w != old_w:
             _rewrap_all_messages()
 
     def _collapsed_for_tag(tag, full_msg, wrap_chars=None):
@@ -498,7 +493,7 @@ def show():
 
     def on_msg_click(item):
         """Toggle collapse/expand for message column on double-click."""
-        if item.column() != 3:
+        if item.column() != 2:
             return
         r = state["visible"][item.row()]
         tag = r.tag
@@ -513,7 +508,7 @@ def show():
 
         # Update the item text immediately
         new_text = _collapsed_for_tag(tag, full_msg, wrap_chars=_msg_col_chars())
-        msg_item = table.item(item.row(), 3)
+        msg_item = table.item(item.row(), 2)
         msg_item.setText(new_text)
         table.resizeRowToContents(item.row())
 
