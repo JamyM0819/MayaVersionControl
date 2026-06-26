@@ -17,9 +17,8 @@ from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
-                              _parse_ver, _git, get_plugin_repo_hash, git_amend_commit,
-                              dry_run_next_version, git_commit)
-from core.gitignore import write_gitignore
+                              _parse_ver, get_plugin_repo_hash, vc_amend_commit,
+                              dry_run_next_version, vc_commit)
 from core.perf_monitor import show_perf_panel
 from ui.commit_dialog import show_commit_dialog, show_amend_dialog
 
@@ -295,7 +294,7 @@ def show():
                 f"  ({my_count} versions)"
             )
 
-            # current version + hash from the currently open Maya file
+            # current version info from the currently open Maya file
             try:
                 import maya.cmds as cmds
                 p = cmds.file(q=True, sn=True)
@@ -303,10 +302,16 @@ def show():
                     cur_base, cur_ext, cur_ver = _parse_ver(p)
                     if cur_ver > 0:
                         cur_tag = f"{cur_base}_v{cur_ver:03d}"
-                        cur_hash = _git(["log", "-1", "--format=%h", cur_tag, "--"], cwd=d) or ""
+                        # Look up time from history records
+                        cur_time = ""
+                        for rec in state["records"]:
+                            if rec.tag == cur_tag:
+                                cur_time = rec.date
+                                break
                         info_label.setText(
                             f'<a href="locate" style="color:#27AE60; text-decoration:none;">'
-                            f'Current: {cur_tag}  |  commit: {cur_hash or "---"}'
+                            f'Current: {cur_tag}'
+                            f'{("  |  " + cur_time) if cur_time else ""}'
                             f'</a>'
                         )
                         state["cur_tag"] = cur_tag
@@ -427,7 +432,7 @@ def show():
                 return ts + body
             return _wrap_body(full_msg, wrap_chars, "")
 
-        # Multi-commit (git_amend_commit appends)
+        # Multi-commit (vc_amend_commit appends)
         records = full_msg.split("\n")
         blocks = []
         for rec in records:
@@ -569,7 +574,7 @@ def show():
                 f"⚠ {len(selected_tags)} files will be deleted from disk.\n"
                 f"   There is NO undo for this operation."
             ),
-            button=["Cancel", "Yes, Delete All"],
+            button=["Yes, Delete All", "Cancel"],
             defaultButton="Cancel",
             cancelButton="Cancel",
             dismissString="Cancel",
@@ -619,7 +624,7 @@ def show():
             return
 
         # Commit
-        if git_amend_commit(state["scenes_dir"], cur, cur_ver, append_msg.strip()):
+        if vc_amend_commit(state["scenes_dir"], cur, cur_ver, append_msg.strip()):
             cmds.warning(f"MayaVC: commit appended to {tag}")
             do_refresh()
         else:
@@ -654,7 +659,7 @@ def show():
                 f"⚠ This will DELETE the original project file from disk.\n"
                 f"   There is NO undo for this operation."
             ),
-            button=["Cancel", "Yes, Delete It"],
+            button=["Yes, Delete It", "Cancel"],
             defaultButton="Cancel",
             cancelButton="Cancel",
             dismissString="Cancel",
@@ -664,7 +669,7 @@ def show():
                 do_refresh()
 
     def on_inc_save():
-        """Incremental save + commit dialog + git commit. Same as shelf_main."""
+        """Incremental save + commit dialog + commit. Same as shelf_main."""
         import maya.cmds as cmds
 
         d = state["scenes_dir"]
@@ -695,8 +700,8 @@ def show():
             cmds.warning(f"MayaVC: save failed - {e}")
             return
 
-        # 4. Git commit + tag
-        if git_commit(d, new_path, new_ver, msg):
+        # 4. Record commit
+        if vc_commit(d, new_path, new_ver, msg):
             cmds.warning(f"MayaVC: v{new_ver:03d} committed - {msg}")
             do_refresh()
         else:

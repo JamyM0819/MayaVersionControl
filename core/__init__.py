@@ -5,13 +5,16 @@ from core.vc_engine import (
     detect_next_version,
     dry_run_next_version,
     incremental_save,
-    git_commit,
-    git_amend_commit,
+    vc_commit,
+    vc_amend_commit,
     get_history,
+    delete_version,
     load_version,
     _parse_ver,
-    _git,
     get_plugin_repo_hash,
+    get_repo_status,
 )
-from core.gitignore import write_gitignore
+# Backward-compat aliases
+git_commit = vc_commit
+git_amend_commit = vc_amend_commit
 from core.perf_monitor import perf_timed, perf_scope, get_perf, show_perf_panel
