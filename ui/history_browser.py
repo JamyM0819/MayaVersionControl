@@ -510,7 +510,7 @@ def show():
         msg_item.setText(new_text)
         table.resizeRowToContents(item.row())
 
-    table.itemDoubleClicked.connect(on_msg_click)
+    table.itemClicked.connect(on_msg_click)
 
     def on_sel():
         if state["edit_mode"]:
