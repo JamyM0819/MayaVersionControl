@@ -11,8 +11,7 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PACKAGE_DIR not in sys.path:
     sys.path.insert(0, _PACKAGE_DIR)
 
-from core.vc_engine import get_scenes_dir, dry_run_next_version, git_commit
-from core.gitignore import write_gitignore
+from core.vc_engine import get_scenes_dir, dry_run_next_version, vc_commit
 from ui.commit_dialog import show_commit_dialog
 
 
@@ -61,7 +60,7 @@ def incremental_save_and_commit():
         return
 
     # 4. Git commit + tag
-    if git_commit(scenes_dir, new_path, new_ver, msg):
+    if vc_commit(scenes_dir, new_path, new_ver, msg):
         cmds.warning(f"MayaVC: v{new_ver:03d} committed - {msg}")
     else:
         cmds.warning("MayaVC: Commit failed.")

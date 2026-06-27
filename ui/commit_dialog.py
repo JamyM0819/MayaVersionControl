@@ -70,16 +70,16 @@ class CommitDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
+        commit_btn = QPushButton("Commit (Ctrl+Enter)")
+        commit_btn.setDefault(True)
+        commit_btn.setFixedWidth(140)
+        commit_btn.clicked.connect(self._on_submit)
+        btn_layout.addWidget(commit_btn)
+
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setFixedWidth(80)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
-
-        submit_btn = QPushButton("Commit (Ctrl+Enter)")
-        submit_btn.setDefault(True)
-        submit_btn.setFixedWidth(140)
-        submit_btn.clicked.connect(self._on_submit)
-        btn_layout.addWidget(submit_btn)
 
         layout.addLayout(btn_layout)
 
@@ -155,16 +155,16 @@ class AmendDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
+        commit_btn = QPushButton("Commit (Ctrl+Enter)")
+        commit_btn.setDefault(True)
+        commit_btn.setFixedWidth(140)
+        commit_btn.clicked.connect(self._on_submit)
+        btn_layout.addWidget(commit_btn)
+
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setFixedWidth(80)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
-
-        submit_btn = QPushButton("Commit (Ctrl+Enter)")
-        submit_btn.setDefault(True)
-        submit_btn.setFixedWidth(140)
-        submit_btn.clicked.connect(self._on_submit)
-        btn_layout.addWidget(submit_btn)
 
         layout.addLayout(btn_layout)
 

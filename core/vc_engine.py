@@ -1,54 +1,19 @@
 """
 core/vc_engine.py - Maya Version Control core engine
-Single responsibility: save file -> git commit + tag -> list tags.
+Stores version metadata in .mayavc/versions.json (no git dependency).
 """
 
+import datetime
+import json
 import os
+import platform
 import re
 import subprocess
-import datetime
-import platform
 
 import maya.cmds as cmds
 import maya.mel as mel
 
 from core.perf_monitor import perf_timed, perf_scope
-
-# Windows: no cmd.exe popup; force utf-8 encoding
-if platform.system() == "Windows":
-    _SUB_KWARGS = dict(capture_output=True, text=True, timeout=15,
-                       creationflags=0x08000000, encoding="utf-8", errors="replace")
-else:
-    _SUB_KWARGS = dict(capture_output=True, text=True, timeout=15,
-                       encoding="utf-8", errors="replace")
-
-
-def _git(args, cwd, binary=False):
-    """Run git, return stdout on success, None on failure.
-
-    IMPORTANT: Returns None on failure (not empty string), so callers can
-    distinguish between "git add succeeded with no output" and "git failed".
-    When checking for failure, use `if _git(...) is None`.
-    """
-    cmd_label = f"git {' '.join(args[:2])}"  # e.g. "git tag -l", "git commit -m"
-    kwargs = dict(_SUB_KWARGS)
-    if binary:
-        kwargs.pop("text", None)
-        kwargs.pop("encoding", None)
-        kwargs.pop("errors", None)
-    try:
-        with perf_scope(cmd_label):
-            r = subprocess.run(
-                ["git", "-c", "core.quotepath=false"] + args,
-                cwd=cwd, **kwargs,
-            )
-        if r.returncode != 0:
-            return None
-        if binary:
-            return r.stdout or b""
-        return (r.stdout or "").strip()
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -66,10 +31,8 @@ def get_scenes_dir():
     path = cmds.file(q=True, sn=True)
     if path:
         d = os.path.dirname(os.path.abspath(path))
-        # Don't use temp directories — they aren't the real project
         if d and not _is_temp_dir(d):
             return d
-    # fallback: Maya project scenes/
     try:
         ws = cmds.workspace(q=True, rootDirectory=True)
         if ws:
@@ -89,26 +52,52 @@ def _is_temp_dir(d):
     tmp = os.path.normpath(tempfile.gettempdir()).lower()
     if d.startswith(tmp):
         return True
-    # also catch "maya_vc_" our own temp prefix
     if os.path.basename(d).startswith("maya_vc_"):
         return True
     return False
 
 
 def get_plugin_repo_hash():
-    """Return short hash (12 chars) of the MayaVC plugin's own git repo.
+    """Return short version identifier for the MayaVC plugin itself.
 
-    Used for window titles to identify which version of the tool is running.
-    Returns empty string if the plugin isn't in a git repo.
+    1. Try ``git rev-parse HEAD`` first (subprocess, no _git helper).
+    2. Fall back to cached .mayavc/plugin_version in the plugin directory.
+    3. Cache the git result for future fallback calls.
+    4. Return empty string if nothing works.
     """
     import sys
-    # Locate package root via sys.path — the dir that contains shelf_main.py
     for p in sys.path:
         try:
-            if os.path.isdir(p) and os.path.isfile(os.path.join(p, "shelf_main.py")):
-                h = _git(["rev-parse", "HEAD"], cwd=p)
-                if h and "fatal" not in h:
-                    return h[:7]
+            if not os.path.isdir(p) or not os.path.isfile(os.path.join(p, "shelf_main.py")):
+                continue
+            ver_file = os.path.join(p, ".mayavc", "plugin_version")
+            # Priority 1: git (always current)
+            kwargs = {}
+            if platform.system() == "Windows":
+                kwargs["creationflags"] = 0x08000000
+            try:
+                r = subprocess.run(
+                    ["git", "-c", "core.quotepath=false", "rev-parse", "HEAD"],
+                    cwd=p, capture_output=True, text=True, timeout=10,
+                    encoding="utf-8", errors="replace", **kwargs,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    h = r.stdout.strip()[:7]
+                    # Update cache
+                    try:
+                        os.makedirs(os.path.join(p, ".mayavc"), exist_ok=True)
+                        with open(ver_file, "w", encoding="utf-8") as fh:
+                            fh.write(h)
+                    except Exception:
+                        pass
+                    return h
+            except Exception:
+                pass
+            # Priority 2: cached version file (git not available)
+            if os.path.isfile(ver_file):
+                with open(ver_file, "r", encoding="utf-8") as fh:
+                    return fh.read().strip()[:7]
+            break
         except Exception:
             pass
     return ""
@@ -130,6 +119,57 @@ def _parse_ver(filename):
     return root, ext.lstrip("."), 0
 
 
+# ---------------------------------------------------------------------------
+# NTFS Alternate Data Stream helpers (UUID-based file identity)
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid
+import time as _time
+
+
+def _make_uuid():
+    """Generate a stable-ish UUID from timestamp + random (not content-based)."""
+    return _uuid.uuid4().hex
+
+
+def _write_ntfs_uuid(filepath, uid):
+    """Write *uid* into ``filepath:mayaVC_uuid`` NTFS stream.  No-op on failure."""
+    try:
+        with open(filepath + ":mayaVC_uuid", "w", encoding="utf-8") as f:
+            f.write(uid)
+    except Exception:
+        pass  # non-NTFS volume — silently skip
+
+
+def _read_ntfs_uuid(filepath):
+    """Read UUID from ``filepath:mayaVC_uuid`` NTFS stream.  Return "" on failure."""
+    try:
+        with open(filepath + ":mayaVC_uuid", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, IOError):
+        return ""
+
+
+def _build_uuid_disk_map(scenes_dir):
+    """Scan *scenes_dir* for .ma/.mb files, read their NTFS UUID streams.
+
+    Returns {uuid: actual_filename_on_disk}.
+    Only includes files where a UUID was successfully read.
+    """
+    uuid_map = {}
+    try:
+        for f in os.listdir(scenes_dir):
+            if not f.lower().endswith((".ma", ".mb")):
+                continue
+            fpath = os.path.join(scenes_dir, f)
+            uid = _read_ntfs_uuid(fpath)
+            if uid:
+                uuid_map[uid] = f
+    except Exception:
+        pass
+    return uuid_map
+
+
 def detect_next_version(scenes_dir, base=None):
     """Return (base, ext, next_ver).
 
@@ -149,8 +189,6 @@ def detect_next_version(scenes_dir, base=None):
     if base is None:
         base = current_base or "untitled"
 
-    # Always scan the given base from scratch; if the user chose a different
-    # name, the loop naturally finds nothing and returns 1.
     max_ver = 0
     try:
         for f in os.listdir(scenes_dir):
@@ -192,249 +230,353 @@ def dry_run_next_version(scenes_dir):
     return base, ext, ver, new_path
 
 
-def _ensure_git(scenes_dir):
-    """git init if needed; set user.name / user.email if missing.
+# ---------------------------------------------------------------------------
+# JSON persistence layer
+# ---------------------------------------------------------------------------
 
-    We check for a .git directory INSIDE scenes_dir specifically, because
-    git rev-parse --is-inside-work-tree would walk up to a parent repo
-    (e.g. the MayaVC plugin repo itself) and falsely report 'true'.
+def _vc_dir(scenes_dir):
+    """Return path to .mayavc metadata directory (does NOT create it)."""
+    return os.path.join(scenes_dir, ".mayavc")
+
+
+def _ensure_vc_dir(scenes_dir):
+    """Create .mayavc/ if missing. Return the directory path."""
+    d = _vc_dir(scenes_dir)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _read_versions(scenes_dir):
+    """Read .mayavc/versions.json → dict (tag → entry).  Empty dict on failure."""
+    json_path = os.path.join(_vc_dir(scenes_dir), "versions.json")
+    if not os.path.isfile(json_path):
+        return {}
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, IOError, OSError):
+        return {}
+
+
+def _lock_file(scenes_dir):
+    """Acquire exclusive advisory lock on .mayavc/versions.lock.
+
+    Returns the lock file handle, or None on failure.
     """
-    if not os.path.isdir(os.path.join(scenes_dir, ".git")):
-        _git(["init"], cwd=scenes_dir)
-
-    if not _git(["-C", scenes_dir, "config", "user.name"], cwd=scenes_dir) \
-       and not _git(["-C", scenes_dir, "config", "--global", "user.name"], cwd=scenes_dir):
-        try:
-            import getpass
-            u = getpass.getuser()
-        except Exception:
-            u = "maya-artist"
-        _git(["-C", scenes_dir, "config", "user.name", u], cwd=scenes_dir)
-    if not _git(["-C", scenes_dir, "config", "user.email"], cwd=scenes_dir) \
-       and not _git(["-C", scenes_dir, "config", "--global", "user.email"], cwd=scenes_dir):
-        try:
-            import getpass
-            u = getpass.getuser()
-        except Exception:
-            u = "maya-artist"
-        _git(["-C", scenes_dir, "config", "user.email", f"{u}@maya-vc.local"], cwd=scenes_dir)
+    _ensure_vc_dir(scenes_dir)
+    lock_path = os.path.join(_vc_dir(scenes_dir), "versions.lock")
+    try:
+        fh = open(lock_path, "w")
+        if platform.system() == "Windows":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        return fh
+    except (IOError, OSError):
+        return None
 
 
-@perf_timed()
-def git_commit(scenes_dir, file_path, version, message):
-    """git add + commit + tag.  Returns True on success."""
-    _ensure_git(scenes_dir)
-    fname = os.path.basename(file_path)
-    base, _, _ = _parse_ver(fname)
-    tag = f"{base}_v{version:03d}"
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    full_msg = f"[{now_str}] {message.strip()}"
-
-    # add
-    out = _git(["add", fname], cwd=scenes_dir)
-    if out is None:
-        cmds.warning("MayaVC: git add failed")
-        return False
-
-    # commit (allow-empty so the tag always gets force-updated)
-    r = _git(["commit", "--allow-empty", "-m", full_msg], cwd=scenes_dir)
-    if r is None:
-        cmds.warning("MayaVC: git commit failed")
-        return False
-
-    # tag (annotated — store full multiline message; get_history reads %(contents))
-    _git(["tag", "-f", "-a", "-m", full_msg, tag], cwd=scenes_dir)
-    return True
+def _unlock_file(lock_fh):
+    """Release advisory lock and close the file handle."""
+    if lock_fh is None:
+        return
+    try:
+        if platform.system() == "Windows":
+            import msvcrt
+            msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
+    except Exception:
+        pass
 
 
-@perf_timed()
-def git_amend_commit(scenes_dir, file_path, version, append_message):
-    """Append a commit message to an existing tag WITHOUT bumping the version number.
+def _write_versions_atomic(scenes_dir, data):
+    """Atomically write versions dict to JSON (caller must hold the lock).
 
-    This is used by "Save with Commit and Load" — the user's in-progress edits
-    are saved and committed to the current tag, building up a log of what
-    happened at each step.  The tag is force-updated to point to the new commit.
-
-    Returns True on success.
+    Writes to a .tmp file then calls os.replace() for atomic replacement.
     """
-    _ensure_git(scenes_dir)
-    fname = os.path.basename(file_path)
-    base, _, _ = _parse_ver(fname)
-    tag = f"{base}_v{version:03d}"
-
-    # Pull the existing tag annotation body (full multiline contents)
-    existing = _git(["for-each-ref", "--format=%(contents)",
-                     f"refs/tags/{tag}"], cwd=scenes_dir)
-    existing = (existing or "").strip()
-
-    # Append the new record — timestamped so the Message column reads as a log
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    append_line = f"[{now_str}] {append_message.strip()}"
-
-    if existing:
-        full_msg = f"{existing}\n{append_line}"
-    else:
-        # Existing annotation might start with the old subject line;
-        # prepend a tag header so the first line is always meaningful.
-        full_msg = f"{tag} | {append_line}"
-
-    out = _git(["add", fname], cwd=scenes_dir)
-    if out is None:
-        cmds.warning("MayaVC: git add failed")
+    vc_dir = _vc_dir(scenes_dir)
+    json_path = os.path.join(vc_dir, "versions.json")
+    tmp_path = json_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp_path, json_path)
+        return True
+    except Exception as e:
+        cmds.warning(f"MayaVC: failed to write versions.json - {e}")
         return False
 
-    r = _git(["commit", "--allow-empty", "-m", full_msg], cwd=scenes_dir)
-    if r is None:
-        cmds.warning("MayaVC: git commit failed")
-        return False
 
-    # tag (annotated — so get_history can read %(contents) from the tag itself)
-    _git(["tag", "-f", "-a", "-m", full_msg, tag], cwd=scenes_dir)
-    return True
+def _acquire_and_read(scenes_dir):
+    """Acquire lock, read versions dict. Returns (lock_fh, data_dict).
+
+    If lock fails, returns (None, {}).
+    """
+    lock = _lock_file(scenes_dir)
+    if lock is None:
+        cmds.warning("MayaVC: Could not acquire lock on versions.json — concurrent access?")
+        return None, {}
+    return lock, _read_versions(scenes_dir)
 
 
 # ---------------------------------------------------------------------------
-# History (simple: just read tags)
+# VersionRecord
 # ---------------------------------------------------------------------------
 
 class VersionRecord:
-    __slots__ = ("tag", "date", "message", "file", "hash")
-    def __init__(self, tag, date, message, file="", hash=""):
+    __slots__ = ("tag", "date", "message", "file", "hash", "uuid")
+
+    def __init__(self, tag, date, message, file="", hash="", uuid=""):
         self.tag = tag
         self.date = date
         self.message = message
-        self.file = file        # basename of the scene file stored in this tag
-        self.hash = hash        # short commit hash (7 chars)
+        self.file = file       # basename of the scene file
+        self.hash = hash       # always "" in JSON mode; kept for backward compat
+        self.uuid = uuid       # NTFS stream UUID for identity across renames
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+@perf_timed()
+def vc_commit(scenes_dir, file_path, version, message):
+    """Record a version in .mayavc/versions.json.  Returns True on success."""
+    _ensure_vc_dir(scenes_dir)
+    fname = os.path.basename(file_path)
+    base, _, _ = _parse_ver(fname)
+    tag = f"{base}_v{version:03d}"
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    msg_line = f"[{now_str}] {message.strip()}"
+
+    lock, data = _acquire_and_read(scenes_dir)
+    if lock is None:
+        return False
+
+    try:
+        if tag in data:
+            entry = data[tag]
+            entry["messages"].append(msg_line)
+            # Update file / time to reflect latest save
+            entry["file"] = fname
+            entry["time"] = now_str
+        else:
+            data[tag] = {
+                "tag": tag,
+                "file": fname,
+                "time": now_str,
+                "messages": [msg_line],
+            }
+
+        # Ensure UUID — generate + write to NTFS stream if missing
+        uid = data[tag].get("uuid", "") or _make_uuid()
+        data[tag]["uuid"] = uid
+        _write_ntfs_uuid(file_path, uid)
+
+        return _write_versions_atomic(scenes_dir, data)
+    finally:
+        _unlock_file(lock)
+
+
+@perf_timed()
+def vc_amend_commit(scenes_dir, file_path, version, append_message):
+    """Append a timestamped message to an existing version WITHOUT bumping the
+    version number.  Used by "Save w/ Commit" and "Save w/ Commit and Load".
+
+    Returns True on success.
+    """
+    _ensure_vc_dir(scenes_dir)
+    fname = os.path.basename(file_path)
+    base, _, _ = _parse_ver(fname)
+    tag = f"{base}_v{version:03d}"
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    append_line = f"[{now_str}] {append_message.strip()}"
+
+    lock, data = _acquire_and_read(scenes_dir)
+    if lock is None:
+        return False
+
+    try:
+        entry = data.get(tag)
+        if entry is None:
+            # Tag doesn't exist yet — create it as a single entry
+            data[tag] = {
+                "tag": tag,
+                "file": fname,
+                "time": now_str,
+                "messages": [append_line],
+            }
+        else:
+            entry["messages"].append(append_line)
+            entry["file"] = fname
+            entry["time"] = now_str
+
+        # Ensure UUID
+        uid = data[tag].get("uuid", "") or _make_uuid()
+        data[tag]["uuid"] = uid
+        _write_ntfs_uuid(file_path, uid)
+
+        return _write_versions_atomic(scenes_dir, data)
+    finally:
+        _unlock_file(lock)
 
 
 @perf_timed()
 def get_history(scenes_dir, scene_name=None):
-    """Return list of VersionRecord, newest first.
+    """Return list of VersionRecord, newest first, from versions.json.
 
-    Uses 'git tag -l --sort=-creatordate' then 'git log -1 --format=%ai|%s <tag>'
-    for each tag.  This is O(tags) but for a single-artist Maya project
-    that's tens of tags, not hundreds.
-
-    Args:
-        scenes_dir: Path to the scenes/ git repo.
-        scene_name: If given, filter to versions of this scene base name
-                    (e.g. "hero" matches hero_v001.ma, hero_v005.mb).
-                    If None/empty, show all versions across all scenes.
+    Auto-syncs with disk: imports orphan files, matches renames via UUID,
+    removes entries whose files no longer exist.
     """
-    if not os.path.isdir(os.path.join(scenes_dir, ".git")):
-        return []
-
+    data = _read_versions(scenes_dir)
     filter_base = (scene_name or "").lower()
+    needs_sync = False
 
-    # --- 1) Single git call: all tag metadata ---
-    # Use %(contents) so multiline messages from git_amend_commit are captured.
-    # Each tag entry starts with "refname|hash|" on its own line; subsequent
-    # lines until the next "refname|hash|" pattern are the message body.
-    refs_raw = _git([
-        "for-each-ref",
-        "--sort=-version:refname",
-        "--format=%(refname:short)|%(objectname:short)|%(contents)",
-        "refs/tags",
-    ], cwd=scenes_dir)
-
-    if not refs_raw:
-        return []
-
-    # Parse: tag -> (hash, message).  State machine because %(contents) can
-    # span multiple lines.
-    tag_meta = {}      # tag -> (hash, message)
-    tag_entry = re.compile(r'^(.+?)\|([a-f0-9]{7,})\|(.*)$')
-    current_tag = None
-    current_hash = ""
-    current_lines = []
-    for line in refs_raw.split("\n"):
-        m = tag_entry.match(line)
-        if m:
-            # flush previous entry
-            if current_tag is not None:
-                msg = "\n".join(current_lines).strip()
-                tag_meta[current_tag] = (current_hash, msg)
-            # start new entry
-            current_tag = m.group(1)
-            current_hash = m.group(2)[:7]
-            current_lines = [m.group(3)]
-        else:
-            # continuation of previous message body
-            current_lines.append(line)
-    # flush last entry
-    if current_tag is not None:
-        msg = "\n".join(current_lines).strip()
-        tag_meta[current_tag] = (current_hash, msg)
-
-    # --- 2) Match tags to files on disk (no extra git calls) ---
-    # Scan scenes_dir once. Map "base_vNNN" -> filename for quick lookup.
-    disk_files = {}  # lowercased "base_vnnn" -> actual filename
+    # ---- disk maps ----
+    disk_files = {}
     try:
         for f in os.listdir(scenes_dir):
             low = f.lower()
             if low.endswith((".ma", ".mb")):
-                # Extract {base}_vNNN part from filename (strip extension)
                 root, _ = os.path.splitext(low)
                 disk_files[root] = f
     except Exception:
         pass
+    uuid_disk = _build_uuid_disk_map(scenes_dir)
+
+    # ---- Phase 1: sync data with disk ----
+    # 1a. UUID-based filename sync for existing entries
+    for tag, entry in data.items():
+        if not re.match(r'^(.+)_v(\d{3,})$', tag):
+            continue
+        if entry.get("file") and os.path.isfile(os.path.join(scenes_dir, entry["file"])):
+            continue
+        uid = entry.get("uuid", "")
+        if uid and uid in uuid_disk:
+            entry["file"] = uuid_disk[uid]
+            needs_sync = True
+
+    # 1b. Auto-import orphan disk files
+    covered_files = set()
+    for e in data.values():
+        f = e.get("file", "")
+        if f and os.path.isfile(os.path.join(scenes_dir, f)):
+            covered_files.add(f.lower())
+
+    for f_low, f_actual in disk_files.items():
+        if f_actual.lower() in covered_files:
+            continue
+        m = re.match(r'^(.+)_v(\d{3,})$', f_low)
+        if not m:
+            continue
+        base, ver = m.group(1), int(m.group(2))
+        tag = f"{base}_v{ver:03d}"
+        if tag in data:
+            continue
+        fpath = os.path.join(scenes_dir, f_actual)
+        uid = _read_ntfs_uuid(fpath)
+
+        # Try UUID match first
+        matched = False
+        if uid:
+            for e in data.values():
+                if e.get("uuid", "") == uid:
+                    e["file"] = f_actual
+                    needs_sync = matched = True
+                    break
+        # Try merge with dead entry of same version
+        if not matched:
+            for e_tag, e_entry in list(data.items()):
+                ev = re.match(r'^(.+)_v(\d{3,})$', e_tag)
+                if not ev or int(ev.group(2)) != ver:
+                    continue
+                ef = e_entry.get("file", "")
+                if ef and not os.path.isfile(os.path.join(scenes_dir, ef)):
+                    e_entry["file"] = f_actual
+                    data[tag] = e_entry
+                    data[tag]["tag"] = tag
+                    del data[e_tag]
+                    needs_sync = matched = True
+                    break
+        # True orphan
+        if not matched:
+            ts = datetime.datetime.fromtimestamp(
+                os.path.getmtime(fpath)).strftime("%Y-%m-%d %H:%M")
+            data[tag] = {
+                "tag": tag, "file": f_actual, "time": ts,
+                "messages": [f"[{ts}] (auto-imported)"],
+            }
+            if uid:
+                data[tag]["uuid"] = uid
+            needs_sync = True
+
+    if needs_sync:
+        lock, _ = _acquire_and_read(scenes_dir)
+        if lock is not None:
+            try:
+                _write_versions_atomic(scenes_dir, data)
+            finally:
+                _unlock_file(lock)
+
+    # ---- Phase 2: build records ----
+    if not data:
+        return []
 
     records = []
-    for tag, (commit_hash, msg) in tag_meta.items():
+    for tag, entry in data.items():
         tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
         if not tag_ver:
             continue
         if filter_base and tag_ver.group(1).lower() != filter_base:
             continue
-
-        # File name: look up on disk first, fall back to git ls-tree
-        tag_file = disk_files.get(tag.lower(), "")
-        if not tag_file:
-            # Rare: file not on disk, one-off git ls-tree
-            ls = _git(["ls-tree", "-r", "--name-only", tag], cwd=scenes_dir)
-            if ls:
-                for f in ls.split("\n"):
-                    if f.lower().endswith((".ma", ".mb")):
-                        tag_file = f.strip()
-                        break
-
-        # Date: scene file mtime > tag ref mtime
-        date_str = ""
-        if tag_file:
-            file_path = os.path.join(scenes_dir, tag_file)
-            if os.path.isfile(file_path):
-                date_str = datetime.datetime.fromtimestamp(
-                    os.path.getmtime(file_path)).strftime("%Y-%m-%d %H:%M")
-        if not date_str:
-            ref_path = os.path.join(scenes_dir, ".git", "refs", "tags", tag)
-            if os.path.isfile(ref_path):
-                date_str = datetime.datetime.fromtimestamp(
-                    os.path.getmtime(ref_path)).strftime("%Y-%m-%d %H:%M")
-
+        tag_file = disk_files.get(tag.lower(), "") or entry.get("file", "")
+        if not tag_file or not os.path.isfile(os.path.join(scenes_dir, tag_file)):
+            continue
+        try:
+            ts = datetime.datetime.fromtimestamp(
+                os.path.getmtime(os.path.join(scenes_dir, tag_file))
+            ).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            ts = entry.get("time", "")
         records.append(VersionRecord(
-            tag=tag, date=date_str, message=msg, file=tag_file, hash=commit_hash,
+            tag=tag, date=ts,
+            message="\n".join(entry.get("messages", [])),
+            file=tag_file, hash="",
+            uuid=entry.get("uuid", ""),
         ))
 
+    records.sort(key=lambda r: (r.date, r.tag), reverse=True)
     return records
 
 
+@perf_timed()
 def delete_version(scenes_dir, tag, filename):
-    """Delete a version: remove file from disk and delete git tag.
-
-    This is destructive — the .ma/.mb file is permanently removed from the
-    scenes directory and the git tag is deleted so it no longer appears in
-    the version history.
+    """Delete a version: remove entry from JSON and delete the scene file.
 
     Returns True on success, False on failure.
     """
-    file_path = os.path.join(scenes_dir, filename)
-
-    # 1. Delete the git tag first (reversible-ish: git reflog)
-    if _git(["tag", "-d", tag], cwd=scenes_dir) is None:
-        cmds.warning(f"MayaVC: failed to delete tag {tag}")
+    lock, data = _acquire_and_read(scenes_dir)
+    if lock is None:
         return False
 
-    # 2. Remove the physical file
+    try:
+        if tag not in data:
+            cmds.warning(f"MayaVC: tag {tag} not found in versions.json")
+            return False
+        del data[tag]
+        if not _write_versions_atomic(scenes_dir, data):
+            return False
+    finally:
+        _unlock_file(lock)
+
+    # Remove physical file from disk
+    file_path = os.path.join(scenes_dir, filename)
     try:
         if os.path.isfile(file_path):
             os.remove(file_path)
@@ -448,34 +590,54 @@ def delete_version(scenes_dir, tag, filename):
 
 @perf_timed()
 def load_version(scenes_dir, tag):
-    """Checkout scene file at tag into scenes/ and open in Maya."""
-    # find the .ma/.mb file
-    files = _git(["ls-tree", "-r", "--name-only", tag], cwd=scenes_dir)
-    if files is None:
+    """Open the scene file for *tag* in Maya.
+
+    The file must exist on disk in the scenes directory (no git extraction).
+    Shows a confirmation dialog (Save / Commit-and-Load / Load-without-saving).
+    """
+    data = _read_versions(scenes_dir)
+    entry = data.get(tag)
+    if not entry:
         cmds.warning(f"MayaVC: tag {tag} not found")
         return False
-    scene_files = [f for f in files.split("\n") if f.lower().endswith((".ma", ".mb"))]
-    if not scene_files:
-        cmds.warning(f"MayaVC: no .ma/.mb in tag {tag}")
+
+    tag_file = entry.get("file", "")
+
+    # Build UUID disk map for fallback matching
+    uuid_disk = _build_uuid_disk_map(scenes_dir)
+
+    # Try UUID-based matching if stored filename doesn't exist on disk
+    if tag_file:
+        target_path = os.path.join(scenes_dir, tag_file)
+        if not os.path.isfile(target_path):
+            uid = entry.get("uuid", "")
+            if uid and uid in uuid_disk:
+                tag_file = uuid_disk[uid]
+                # Sync JSON
+                entry["file"] = tag_file
+                lock, _ = _acquire_and_read(scenes_dir)
+                if lock is not None:
+                    try:
+                        _write_versions_atomic(scenes_dir, data)
+                    finally:
+                        _unlock_file(lock)
+
+    if not tag_file:
+        cmds.warning(f"MayaVC: no file recorded for tag {tag}")
         return False
 
-    target = scene_files[0]
-    # If multiple scene files in this commit (the usual case after v001),
-    # pick the one whose version suffix matches this tag (hero_v005 → _v005.)
-    if len(scene_files) > 1:
-        m = re.search(r'_v(\d{3,})$', tag)
-        if m:
-            version_suffix = f"_v{m.group(1)}."
-            for f in scene_files:
-                if version_suffix in f:
-                    target = f
-                    break
-    _, ext = os.path.splitext(target)
+    target_path = os.path.join(scenes_dir, tag_file)
+    if not os.path.isfile(target_path):
+        cmds.warning(f"MayaVC: file not found on disk — {tag_file}")
+        return False
+
+    _, ext = os.path.splitext(tag_file)
     is_binary = ext.lower() == ".mb"
 
+    # Confirm dialog
     result = cmds.confirmDialog(
         title="Load Historical Version",
-        message=f"Load {tag}: {target}?\n\nSave current scene first?",
+        message=f"Load {tag}: {tag_file}?\n\nSave current scene first?",
         button=["Save w/ Commit and Load", "Save and Load",
                 "Load without Saving", "Cancel"],
         defaultButton="Save and Load",
@@ -490,7 +652,6 @@ def load_version(scenes_dir, tag):
         cur_base, _, cur_ver = _parse_ver(os.path.basename(cur)) if cur else ("", "", 0)
 
         if result == "Save w/ Commit and Load" and cur_ver > 0:
-            # Ask for commit message FIRST, commit button triggers save + commit
             user_msg = cmds.promptDialog(
                 title="Commit Message",
                 message=f"Describe this save (appended to {cur_base}_v{cur_ver:03d}):",
@@ -503,7 +664,6 @@ def load_version(scenes_dir, tag):
                 return False
             append_msg = cmds.promptDialog(q=True, text=True) or ""
 
-            # Now save
             try:
                 with perf_scope("maya_file_save"):
                     mel.eval("file -save -f")
@@ -512,23 +672,12 @@ def load_version(scenes_dir, tag):
                 cmds.warning(f"MayaVC: save failed - {e}")
                 return False
 
-            # Commit
             if append_msg.strip():
-                git_amend_commit(scenes_dir, cur, cur_ver, append_msg.strip())
+                vc_amend_commit(scenes_dir, cur, cur_ver, append_msg.strip())
                 cmds.warning(f"MayaVC: commit appended to {cur_base}_v{cur_ver:03d}")
             else:
                 cmds.warning("MayaVC: empty message — commit skipped, file saved")
-
-            # Sync tag mtime
-            tag_path = os.path.join(scenes_dir, ".git", "refs", "tags",
-                                    f"{cur_base}_v{cur_ver:03d}")
-            if os.path.isfile(tag_path) and os.path.isfile(cur):
-                try:
-                    os.utime(tag_path, (os.path.getmtime(cur), os.path.getmtime(cur)))
-                except Exception:
-                    pass
         else:
-            # Plain "Save and Load": save first, then load
             try:
                 with perf_scope("maya_file_save"):
                     mel.eval("file -save -f")
@@ -536,60 +685,69 @@ def load_version(scenes_dir, tag):
             except Exception as e:
                 cmds.warning(f"MayaVC: save failed - {e}")
 
-            # Sync tag file mtime for plain "Save and Load"
-            if cur_ver > 0:
-                tag_path = os.path.join(scenes_dir, ".git", "refs", "tags",
-                                        f"{cur_base}_v{cur_ver:03d}")
-                if os.path.isfile(tag_path) and os.path.isfile(cur):
-                    try:
-                        os.utime(tag_path, (os.path.gettime(cur), os.path.gettime(cur)))
-                    except Exception:
-                        pass
-
-    # Open the target version from disk (it's already in scenes/).
-    # Only fall back to git extraction if the file doesn't exist on disk.
-    checkout_path = os.path.join(scenes_dir, target)
-    if os.path.isfile(checkout_path):
-        with perf_scope("maya_file_open"):
-            cmds.file(checkout_path, open=True, force=True)
-        return True
-
-    # Rare: file not on disk — extract from git
-    if is_binary:
-        try:
-            r = subprocess.run(
-                ["git", "-c", "core.quotepath=false", "show", f"{tag}:{target}"],
-                cwd=scenes_dir,
-                capture_output=True, timeout=15,
-                **({"creationflags": 0x08000000} if platform.system() == "Windows" else {}),
-            )
-            if r.returncode == 0 and r.stdout:
-                content_bytes = r.stdout
-            else:
-                cmds.warning(f"MayaVC: could not read {tag}:{target}")
-                return False
-        except Exception:
-            cmds.warning(f"MayaVC: could not read {tag}:{target}")
-            return False
-    else:
-        content = _git(["show", f"{tag}:{target}"], cwd=scenes_dir)
-        if not content:
-            cmds.warning(f"MayaVC: could not read {tag}:{target}")
-            return False
-        content_bytes = content.encode("utf-8")
-
-    with open(checkout_path, "wb") as f:
-        f.write(content_bytes)
-
+    # Open the target version
     try:
         with perf_scope("maya_file_open"):
-            cmds.file(checkout_path, open=True, force=True)
+            cmds.file(target_path, open=True, force=True)
         return True
     except Exception:
         try:
-            cmds.file(checkout_path, i=True,
+            cmds.file(target_path, i=True,
                       type="mayaBinary" if is_binary else "mayaAscii")
             return True
         except Exception as e:
             cmds.warning(f"MayaVC: open failed - {e}")
             return False
+
+
+def get_repo_status(scenes_dir):
+    """Return a status summary dict consumed by ui/status_widget.py.
+
+    Keys: is_repo, total_versions, current_version, last_commit_time,
+          last_commit_message.
+    """
+    result = {
+        "is_repo": False,
+        "total_versions": 0,
+        "current_version": 0,
+        "last_commit_time": "",
+        "last_commit_message": "",
+    }
+
+    data = _read_versions(scenes_dir)
+    if not data:
+        return result
+
+    result["is_repo"] = True
+    result["total_versions"] = len(data)
+
+    # Find most recent entry by time
+    newest = None
+    for entry in data.values():
+        t = entry.get("time", "")
+        if newest is None or t > newest.get("time", ""):
+            newest = entry
+
+    if newest:
+        result["last_commit_time"] = newest.get("time", "")
+        msgs = newest.get("messages", [])
+        if msgs:
+            result["last_commit_message"] = msgs[-1]
+
+    # Current version from open Maya file
+    try:
+        p = cmds.file(q=True, sn=True)
+        if p:
+            _, _, ver = _parse_ver(os.path.basename(p))
+            result["current_version"] = ver
+    except Exception:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases (so existing callers don't break)
+# ---------------------------------------------------------------------------
+git_commit = vc_commit
+git_amend_commit = vc_amend_commit

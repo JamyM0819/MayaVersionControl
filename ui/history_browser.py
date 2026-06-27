@@ -5,21 +5,22 @@ Simple QWidget with Qt.Window flag, parented to Maya main window.
 
 import os
 import re
+import subprocess
 import textwrap as _textwrap
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QLabel, QAbstractItemView,
+    QToolButton, QMenu, QLineEdit, QWidgetAction, QFileDialog,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
-                              _parse_ver, _git, get_plugin_repo_hash, git_amend_commit,
-                              dry_run_next_version, git_commit)
-from core.gitignore import write_gitignore
+                              _parse_ver, get_plugin_repo_hash, vc_amend_commit,
+                              dry_run_next_version, vc_commit)
 from core.perf_monitor import show_perf_panel
 from ui.commit_dialog import show_commit_dialog, show_amend_dialog
 
@@ -52,6 +53,42 @@ def _save_collapsed():
         cmds.optionVar(sv=("MayaVC_collapsed", ";;".join(parts)))
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Persistent recent projects (survives Maya sessions)
+# ---------------------------------------------------------------------------
+
+
+def _load_recent_projects():
+    """Load recent project paths from Maya optionVars. Returns list of paths."""
+    try:
+        import maya.cmds as cmds
+        raw = cmds.optionVar(q="MayaVC_recent_projects") or ""
+        paths = [p for p in raw.split(";;") if p and os.path.isdir(p)]
+        return paths
+    except Exception:
+        return []
+
+
+def _save_recent_projects(paths):
+    """Persist recent project paths to Maya optionVars (max 10)."""
+    try:
+        import maya.cmds as cmds
+        deduped = list(dict.fromkeys(paths))[:10]
+        cmds.optionVar(sv=("MayaVC_recent_projects", ";;".join(deduped)))
+    except Exception:
+        pass
+
+
+def _add_recent_project(path):
+    """Add a path to the front of recent projects list and persist."""
+    paths = _load_recent_projects()
+    path = os.path.normpath(os.path.abspath(path))
+    if path in paths:
+        paths.remove(path)
+    paths.insert(0, path)
+    _save_recent_projects(paths)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +139,20 @@ def _get_maya_window():
     except Exception:
         pass
     return None
+
+
+class _SortableItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts by a custom sort key instead of display text."""
+    __slots__ = ("_sort_key",)
+
+    def __init__(self, text, sort_key):
+        super().__init__(text)
+        self._sort_key = sort_key
+
+    def __lt__(self, other):
+        if isinstance(other, _SortableItem):
+            return self._sort_key < other._sort_key
+        return super().__lt__(other)
 
 
 def show():
@@ -161,8 +212,126 @@ def show():
     lay.setSpacing(4)
 
     top_bar = QHBoxLayout()
-    label = QLabel("Project: (click Refresh)")
-    top_bar.addWidget(label, stretch=1)
+
+    # ---- Set Project (button + dropdown + folder icon) ----
+    proj_row = QHBoxLayout()
+    set_project_btn = QPushButton("(none)")
+    set_project_btn.setMinimumWidth(140)
+    set_project_btn.setStyleSheet("text-align: left; padding-left: 8px;")
+    set_project_menu = QMenu(set_project_btn)
+    set_project_btn.setMenu(set_project_menu)
+
+    # Folder icon button to the right of the project button
+    folder_btn = QPushButton("📂")
+    folder_btn.setToolTip("Browse for project folder")
+    folder_btn.setFixedWidth(32)
+    folder_btn.setStyleSheet("font-size: 16px;")
+
+    proj_row.addWidget(set_project_btn)
+    proj_row.addWidget(folder_btn)
+    top_bar.addLayout(proj_row)
+    top_bar.addSpacing(8)
+
+    # Build the popup menu (rebuilt each time it's about to show)
+    def _build_project_menu():
+        set_project_menu.clear()
+
+        # -- Search/filter bar at top --
+        search_action = QWidgetAction(set_project_menu)
+        search_box = QLineEdit()
+        search_box.setPlaceholderText("Filter...")
+        search_box.setClearButtonEnabled(True)
+        search_action.setDefaultWidget(search_box)
+        set_project_menu.addAction(search_action)
+
+        # -- Recent projects section --
+        recent = _load_recent_projects()
+        current_dir = state.get("scenes_dir", "")
+        items = []
+        if current_dir and os.path.isdir(current_dir):
+            items.append((os.path.basename(current_dir) or current_dir, current_dir))
+        for p in recent:
+            p = os.path.normpath(p)
+            if p and os.path.isdir(p) and p != current_dir:
+                items.append((os.path.basename(p) or p, p))
+        items = list(dict.fromkeys(items))
+
+        def _filter_menu(text):
+            filt = text.lower()
+            for action in set_project_menu.actions():
+                if action is search_action:
+                    continue
+                if action.isSeparator():
+                    action.setVisible(not filt)
+                else:
+                    action.setVisible(not filt or filt in action.text().lower())
+
+        search_box.textChanged.connect(_filter_menu)
+
+        if items:
+            if current_dir and os.path.isdir(current_dir):
+                set_project_menu.addSection("Current")
+                for label, path in items[:1]:
+                    a = set_project_menu.addAction(f"  {label}")
+                    a.setToolTip(path)
+                    a.triggered.connect(lambda checked=False, p=path: _on_set_project(p))
+            rest = items[1:] if (current_dir and os.path.isdir(current_dir)) else items
+            if rest:
+                set_project_menu.addSection("Recent")
+                for label, path in rest:
+                    a = set_project_menu.addAction(f"  {label}")
+                    a.setToolTip(path)
+                    a.triggered.connect(lambda checked=False, p=path: _on_set_project(p))
+
+        set_project_menu.addSeparator()
+
+        snap_a = set_project_menu.addAction("📍  Use Current Maya Project")
+        snap_a.triggered.connect(_on_use_current_maya_project)
+
+    set_project_menu.aboutToShow.connect(_build_project_menu)
+
+    def _update_project_button_text():
+        d = state.get("scenes_dir", "")
+        if d and os.path.isdir(d):
+            set_project_btn.setText(os.path.basename(d) or d)
+            set_project_btn.setToolTip(d)
+        else:
+            set_project_btn.setText("(none)")
+            set_project_btn.setToolTip("")
+
+    def _on_set_project(path):
+        if not path or not os.path.isdir(path):
+            import maya.cmds as cmds
+            cmds.warning("MayaVC: Project directory not found.")
+            return
+        state["scenes_dir"] = path
+        _add_recent_project(path)
+        _update_project_button_text()
+        do_refresh()
+
+    def _on_browse_project():
+        d = QFileDialog.getExistingDirectory(
+            win, "Select Scenes Directory",
+            state.get("scenes_dir", os.getcwd()),
+            QFileDialog.ShowDirsOnly,
+        )
+        if d:
+            scenes = os.path.join(d, "scenes")
+            if os.path.isdir(scenes):
+                d = scenes
+            _on_set_project(d)
+
+    def _on_use_current_maya_project():
+        import maya.cmds as cmds
+        try:
+            d = get_scenes_dir()
+            if d and os.path.isdir(d):
+                _on_set_project(d)
+            else:
+                cmds.warning("MayaVC: Cannot determine current Maya project.")
+        except Exception as e:
+            cmds.warning(f"MayaVC: {e}")
+
     collapse_all_btn = QPushButton("全部收起")
     top_bar.addWidget(collapse_all_btn)
     latest_only_btn = QPushButton("只看最新")
@@ -171,35 +340,45 @@ def show():
     top_bar.addWidget(filter_toggle_btn)
     lay.addLayout(top_bar)
 
+    # Info row: project name + version count + current version
+    info_bar = QHBoxLayout()
+    label = QLabel("")
+    info_bar.addWidget(label, stretch=1)
     info_label = QLabel("")
     info_label.setStyleSheet("font-size: 12px; font-weight: bold;")
     info_label.setTextFormat(Qt.RichText)
     info_label.setCursor(Qt.PointingHandCursor)
-    lay.addWidget(info_label)
+    info_bar.addWidget(info_label)
+    lay.addLayout(info_bar)
 
     table = QTableWidget(0, 4)
-    table.setHorizontalHeaderLabels(["Version", "Hash", "Date", "Message"])
+    table.setHorizontalHeaderLabels(["Name", "Version", "Date", "Message"])
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table.setAlternatingRowColors(True)
+    table.setAlternatingRowColors(False)
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(1, QHeaderView.Interactive)
+    hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
     hdr.setSectionResizeMode(2, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(3, QHeaderView.Stretch)  # fill remaining width; resize triggers rewrap
-    # Default column widths
-    table.setColumnWidth(0, 150)
-    table.setColumnWidth(1, 80)
-    table.setColumnWidth(2, 140)
-    table.setColumnWidth(3, 300)
-    # Disable native word-wrap on Message column — we handle wrapping ourselves
+    hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+    table.setColumnWidth(0, 130)
+    table.setColumnWidth(1, 60)
+    table.setColumnWidth(2, 130)
+    table.setColumnWidth(3, 280)
     table.setWordWrap(False)
     lay.addWidget(table, stretch=1)
 
-    # Enable click-to-sort on column headers
-    table.setSortingEnabled(True)
+    # We handle all sorting manually — Qt sorting stays OFF
+    table.setSortingEnabled(False)
+
+    # Two group colours that alternate per-base-name when rows are sorted by
+    # Version (i.e. grouped by base name).  Cleared on Date / Message sort.
+    _GROUP_COLOURS = [
+        QColor("#474747"),  # warm ivory
+        QColor("#383838"),  # cool grey
+    ]
 
     blay = QHBoxLayout()
     # left group: save actions
@@ -209,10 +388,6 @@ def show():
     blay.addWidget(save_commit_btn)
     blay.addStretch()
     # right group: tools
-    clear_cache_btn = QPushButton("Clear Cache")
-    blay.addWidget(clear_cache_btn)
-    perf_btn = QPushButton("Perf")
-    blay.addWidget(perf_btn)
     delete_btn = QPushButton("Delete This Version")
     delete_btn.setEnabled(False)
     blay.addWidget(delete_btn)
@@ -223,17 +398,19 @@ def show():
     delete_selected_btn.setVisible(False)
     blay.addWidget(delete_selected_btn)
     blay.addStretch()
-    load_btn = QPushButton("Load This Version")
-    load_btn.setEnabled(False)
-    blay.addWidget(load_btn)
-    folder_btn = QPushButton("Show in Folder")
-    folder_btn.setEnabled(False)
-    blay.addWidget(folder_btn)
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
+    # "?" help button — replaces Clear Cache + Perf
+    help_btn = QToolButton()
+    help_btn.setText("?")
+    help_btn.setFixedWidth(28)
+    help_btn.setToolTip("Tools")
+    blay.addWidget(help_btn)
     lay.addLayout(blay)
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
              "latest_only": False, "edit_mode": False, "cur_tag": None}
+
+    _update_project_button_text()
 
     def _visible_records(records, latest_only):
         """If latest_only, return only the highest-version record per base name."""
@@ -242,7 +419,9 @@ def show():
         best = {}
         ver_re = re.compile(r'^(.+)_v(\d{3,})$')
         for r in records:
-            m = ver_re.match(r.tag)
+            # Use display name (what user sees) for grouping, not internal tag
+            display = os.path.splitext(r.file)[0] if r.file else r.tag
+            m = ver_re.match(display)
             if not m:
                 continue
             base = m.group(1)
@@ -260,6 +439,9 @@ def show():
             state["latest_only"] = latest_only
 
         state["records"] = []
+        # Temporarily disable sorting while we rebuild the table — then
+        # re-enable it so Qt applies the current sort indicator on its own.
+        table.setSortingEnabled(False)
         table.setRowCount(0)
         label.setText("Loading...")
         info_label.setText("")
@@ -280,6 +462,15 @@ def show():
 
         try:
             state["records"] = get_history(d, filter_scene)
+            # Apply pending Version sort if set, otherwise restore last manual sort
+            # Apply saved sort order (set by last column click)
+            order = state.get("_record_order")
+            if order:
+                order_set = {tag: i for i, tag in enumerate(order)}
+                state["records"].sort(key=lambda r: order_set.get(r.tag, 9999))
+            sk = state.pop("_sort_records_key", None)
+            if sk:
+                state["records"].sort(key=sk)
             # Count always reflects current scene's base name versions
             if scene_name and not filter_scene:
                 my_count = sum(1 for r in state["records"]
@@ -295,18 +486,45 @@ def show():
                 f"  ({my_count} versions)"
             )
 
-            # current version + hash from the currently open Maya file
+            # current version info from the currently open Maya file
             try:
                 import maya.cmds as cmds
                 p = cmds.file(q=True, sn=True)
                 if p:
                     cur_base, cur_ext, cur_ver = _parse_ver(p)
+                    cur_tag = None
                     if cur_ver > 0:
                         cur_tag = f"{cur_base}_v{cur_ver:03d}"
-                        cur_hash = _git(["log", "-1", "--format=%h", cur_tag, "--"], cwd=d) or ""
+                        # Verify this tag actually exists in records
+                        if not any(rec.tag == cur_tag for rec in state["records"]):
+                            cur_tag = None  # parsed tag not in JSON — try UUID
+                    if not cur_tag:
+                        # Try UUID match against JSON (handles renamed files)
+                        from core.vc_engine import _read_ntfs_uuid
+                        cur_uid = _read_ntfs_uuid(p)
+                        if cur_uid:
+                            for rec in state["records"]:
+                                if rec.uuid == cur_uid:
+                                    cur_tag = rec.tag
+                                    break
+                        # UUID not found — fall back to filename match
+                        if not cur_tag:
+                            cur_fname = os.path.basename(p)
+                            for rec in state["records"]:
+                                if rec.file == cur_fname:
+                                    cur_tag = rec.tag
+                                    break
+                    if cur_tag:
+                        # Look up time from history records
+                        cur_time = ""
+                        for rec in state["records"]:
+                            if rec.tag == cur_tag:
+                                cur_time = rec.date
+                                break
                         info_label.setText(
                             f'<a href="locate" style="color:#27AE60; text-decoration:none;">'
-                            f'Current: {cur_tag}  |  commit: {cur_hash or "---"}'
+                            f'Current: {cur_tag}'
+                            f'{("  |  " + cur_time) if cur_time else ""}'
                             f'</a>'
                         )
                         state["cur_tag"] = cur_tag
@@ -321,21 +539,39 @@ def show():
 
         visible = _visible_records(state["records"], state["latest_only"])
         state["visible"] = visible
+        state["tag_map"] = {r.tag: r for r in visible}
         cur_tag = state.get("cur_tag")
         cur_row = None
+
+        # --- group colours ---
+        # Called AFTER table items exist so _apply_group_colours can write
+        # to actual cells.
         table.setRowCount(len(visible))
         for i, r in enumerate(visible):
             is_current = cur_tag and r.tag == cur_tag
             if is_current:
                 cur_row = i
 
-            tag_item = QTableWidgetItem(r.tag or "-")
+            display_name = os.path.splitext(r.file)[0] if r.file else (r.tag or "-")
+            # Split into name + version: "球体布尔_v003" → ("球体布尔", "v003")
+            m = re.match(r'^(.+)_v(\d{3,})$', display_name)
+            if m:
+                name_part, ver_part = m.group(1), f"v{m.group(2)}"
+            else:
+                name_part, ver_part = display_name, ""
+
+            tag_item = QTableWidgetItem(name_part)
+            tag_item.setData(Qt.UserRole, r.tag)  # real tag for lookups
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
-            hash_item = QTableWidgetItem(r.hash or "")
-            hash_item.setTextAlignment(Qt.AlignCenter)
-            table.setItem(i, 1, hash_item)
-            table.setItem(i, 2, QTableWidgetItem(r.date or ""))
+
+            ver_item = QTableWidgetItem(ver_part)
+            ver_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(i, 1, ver_item)
+
+            date_item = QTableWidgetItem(r.date or "")
+            date_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(i, 2, date_item)
 
             # Message column: fold multi-line, store full as UserRole
             full_msg = r.message or ""
@@ -355,6 +591,11 @@ def show():
             if "\n" in folded:
                 table.resizeRowToContents(i)
 
+        # --- group colours (deferred until Qt applies the sort indicator) ---
+        # Group colours only for Name/Version sorts
+        ls = state.get("_last_sort_section")
+        QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag, sort_section=ls))
+
         # Auto-scroll to current version row
         _scroll_to_current()
 
@@ -364,7 +605,7 @@ def show():
     def _msg_col_chars():
         """Return chars that fit in the Message column at current width."""
         fm = table.fontMetrics()
-        col_w = table.columnWidth(3)
+        col_w = table.columnWidth(2)
         # Use widest CJK char width — Chinese chars are ~2x as wide as Latin
         cjk_w = fm.horizontalAdvance("█")
         if cjk_w <= 0:
@@ -427,7 +668,7 @@ def show():
                 return ts + body
             return _wrap_body(full_msg, wrap_chars, "")
 
-        # Multi-commit (git_amend_commit appends)
+        # Multi-commit (vc_amend_commit appends)
         records = full_msg.split("\n")
         blocks = []
         for rec in records:
@@ -454,13 +695,69 @@ def show():
                     blocks.append(arrow + _wrap_body(rec, wrap_chars, "      "))
         return "\n".join(blocks)
 
-    def _rewrap_all_messages():
-        """Re-wrap all visible message texts for current column width."""
-        visible = state.get("visible")
+    def _apply_group_colours(visible, cur_tag, sort_section=-1):
+        """Paint alternating backgrounds per base-name group when sorted by
+        Version (section 0).  Disable group colours on Date/Message sort."""
+
         if not visible:
             return
+
+        # ------ decide whether group colours should be ON ------
+        if sort_section < 0:
+            sort_section = table.horizontalHeader().sortIndicatorSection()
+        row_count = table.rowCount()
+        if row_count == 0:
+            return
+
+        if sort_section in (0, 1):
+            # Walk table rows and collect first occurrence of each Name.
+            # Name column (0) already contains just the base, no version.
+            seen = set()
+            bases_in_order = []
+            for i in range(row_count):
+                name_item = table.item(i, 0)
+                base = name_item.text() if name_item else ""
+                if base and base not in seen:
+                    seen.add(base)
+                    bases_in_order.append(base)
+            base_order = {b: idx for idx, b in enumerate(bases_in_order)}
+
+            for i in range(row_count):
+                tag = _tag_for_row(i)
+                if cur_tag and tag == cur_tag:
+                    continue
+                name_item = table.item(i, 0)
+                base = name_item.text() if name_item else ""
+                c = _GROUP_COLOURS[base_order.get(base, 0) % len(_GROUP_COLOURS)]
+                for col in range(4):
+                    cell = table.item(i, col)
+                    if cell:
+                        cell.setBackground(c)
+        else:
+            # Date (1) or Message (2) sort — clear all non-current backgrounds
+            for i in range(row_count):
+                tag = _tag_for_row(i)
+                if cur_tag and tag == cur_tag:
+                    continue
+                for col in range(4):
+                    cell = table.item(i, col)
+                    if cell:
+                        cell.setBackground(QColor(255, 255, 255, 0))  # transparent
+
+    def _rewrap_all_messages():
+        """Re-wrap all visible message texts for current column width."""
+        row_count = table.rowCount()
+        if row_count == 0:
+            return
         w = _msg_col_chars()
-        for i, r in enumerate(visible):
+        tag_map = state.get("tag_map", {})
+        for i in range(row_count):
+            tag = _tag_for_row(i)
+            if not tag:
+                continue
+            r = tag_map.get(tag)
+            if not r:
+                continue
             full_msg = r.message or ""
             new_text = _collapsed_for_tag(r.tag, full_msg, wrap_chars=w)
             item = table.item(i, 3)
@@ -472,6 +769,85 @@ def show():
         if col == 3 and new_w != old_w:
             _rewrap_all_messages()
 
+    def _on_section_clicked(section):
+        """Handle all column clicks when Qt sorting is disabled."""
+        if section == 1:
+            # Pre-scan Name order for Version sort
+            state["_pre_click_names"] = []
+            for i in range(table.rowCount()):
+                n = table.item(i, 0).text() if table.item(i, 0) else ""
+                state["_pre_click_names"].append(n)
+        # Toggle direction for this section
+        dir_key = f"sort_dir_{section}"
+        state[dir_key] = not state.get(dir_key, False)
+        state["_last_sort_section"] = section
+        order = Qt.DescendingOrder if state[dir_key] else Qt.AscendingOrder
+        # Trigger the sort
+        _on_sort_changed(section, order)
+
+    def _on_sort_changed(section, order):
+        """Version (1) = apply pre-scanned Name order sort.
+        Other columns use Qt default."""
+        if section == 1:
+            if getattr(_on_sort_changed, "_busy", False):
+                return
+            _on_sort_changed._busy = True
+            try:
+                state["ver_desc"] = not state.get("ver_desc", True)
+                state["_last_sort_section"] = 1
+                desc = state["ver_desc"]
+
+                # Build name_order from pre-scanned names
+                pre_names = state.pop("_pre_click_names", [])
+                name_order = {}
+                next_idx = 0
+                for n in pre_names:
+                    if n and n not in name_order:
+                        name_order[n] = next_idx
+                        next_idx += 1
+
+                def _sk(r):
+                    n = os.path.splitext(r.file)[0] if r.file else r.tag
+                    m = re.match(r'^(.+)_v(\d+)$', n)
+                    name, ver = (m.group(1), int(m.group(2))) if m else (n, 0)
+                    return (name_order.get(name, 9999), -ver if desc else ver)
+
+                state["_sort_records_key"] = _sk
+                do_refresh(latest_only=state["latest_only"])
+                state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
+                table.horizontalHeader().setSortIndicator(0, Qt.AscendingOrder)
+            finally:
+                _on_sort_changed._busy = False
+            vis = state.get("visible", [])
+            ct = state.get("cur_tag")
+            if vis:
+                QTimer.singleShot(0, lambda: _apply_group_colours(vis, ct, sort_section=1))
+            return
+        # Manual sort for Name (0), Date (2), Message (3)
+        if section in (0, 2, 3):
+            rev = (order == Qt.DescendingOrder)
+            row_count = table.rowCount()
+            rows = []
+            for i in range(row_count):
+                txt = table.item(i, section).text() if table.item(i, section) else ""
+                rows.append((txt.lower(), i))
+            rows.sort(reverse=rev)
+            all_items = []
+            for i in range(row_count):
+                all_items.append([table.takeItem(i, c) for c in range(4)])
+            for tgt, (_, src) in enumerate(rows):
+                for c in range(4):
+                    item = all_items[src][c]
+                    if item is not None:
+                        table.setItem(tgt, c, item)
+            table.horizontalHeader().setSortIndicator(section, order)
+            # Save current order for restoration after do_refresh
+            state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
+        visible = state.get("visible")
+        cur_tag = state.get("cur_tag")
+        if visible:
+            QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag, sort_section=section))
+
     def _collapsed_for_tag(tag, full_msg, wrap_chars=None):
         """Return the display text for message column, respecting collapse state."""
         if wrap_chars is None:
@@ -479,15 +855,21 @@ def show():
         collapsed = _COLLAPSED_STATE.get(tag, True)
         return _build_msg_display(full_msg, collapsed, wrap_chars)
 
+    def _tag_for_row(row):
+        """Get the tag (JSON key) for a visual table row."""
+        item = table.item(row, 0)
+        if not item:
+            return ""
+        return item.data(Qt.UserRole) or item.text()
+
     def _scroll_to_current():
-        """Scroll to and select the current version row, if visible."""
+        """Scroll to the current version row without selecting it."""
         cur_tag = state.get("cur_tag")
         if not cur_tag:
             return
-        visible = state.get("visible", [])
-        for i, r in enumerate(visible):
-            if r.tag == cur_tag:
-                table.selectRow(i)
+        row_count = table.rowCount()
+        for i in range(row_count):
+            if _tag_for_row(i) == cur_tag:
                 table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
                 break
 
@@ -495,8 +877,13 @@ def show():
         """Toggle collapse/expand for message column on double-click."""
         if item.column() != 3:
             return
-        r = state["visible"][item.row()]
-        tag = r.tag
+        row = item.row()
+        tag = _tag_for_row(row)
+        if not tag:
+            return
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
         full_msg = r.message or ""
         if "\n" not in full_msg:
             return
@@ -513,18 +900,23 @@ def show():
         table.resizeRowToContents(item.row())
 
     table.itemClicked.connect(on_msg_click)
+    table.itemDoubleClicked.connect(lambda item: on_load())
+
+    # Click on empty area → clear selection
+    def on_table_clicked(index):
+        if not index.isValid():
+            table.clearSelection()
+    table.clicked.connect(on_table_clicked)
 
     def on_sel():
         if state["edit_mode"]:
             rows = {idx.row() for idx in table.selectedIndexes()}
-            en = bool(rows) and min(rows) < len(state.get("visible", []))
+            en = bool(rows) and min(rows) < table.rowCount()
             delete_selected_btn.setEnabled(en)
             delete_btn.setEnabled(True)
         else:
             rows = {idx.row() for idx in table.selectedIndexes()}
-            en = bool(rows) and min(rows) < len(state.get("visible", []))
-            load_btn.setEnabled(en)
-            folder_btn.setEnabled(en)
+            en = bool(rows) and min(rows) < table.rowCount()
             delete_btn.setEnabled(en)
 
     def on_edit():
@@ -533,8 +925,6 @@ def show():
             edit_btn.setText("Edit")
             edit_btn.setStyleSheet("")
             delete_selected_btn.setVisible(False)
-            load_btn.setVisible(True)
-            folder_btn.setVisible(True)
             delete_btn.setVisible(True)
             table.setSelectionMode(QAbstractItemView.SingleSelection)
             state["edit_mode"] = False
@@ -543,8 +933,6 @@ def show():
             edit_btn.setText("Done")
             edit_btn.setStyleSheet("background-color: #e74c3c; color: #fff; font-weight: bold;")
             delete_selected_btn.setVisible(True)
-            load_btn.setVisible(False)
-            folder_btn.setVisible(False)
             delete_btn.setVisible(False)
             table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             state["edit_mode"] = True
@@ -553,36 +941,39 @@ def show():
         rows = sorted({idx.row() for idx in table.selectedIndexes()})
         if not rows:
             return
-        visible = state["visible"]
-        selected_tags = [visible[i].tag for i in rows if i < len(visible)]
-        if not selected_tags:
+        tag_map = state.get("tag_map", {})
+        selected = []
+        for i in rows:
+            tag = _tag_for_row(i)
+            if tag:
+                r = tag_map.get(tag)
+                if r:
+                    selected.append(r)
+        if not selected:
             return
 
-        tag_list = "\n".join(f"  {visible[i].tag}  ({visible[i].date})"
-                             for i in rows if i < len(visible))
+        tag_list = "\n".join(f"  {r.tag}  ({r.date})" for r in selected)
         import maya.cmds as cmds
         confirmed = cmds.confirmDialog(
             title="⚠  DELETE MULTIPLE VERSIONS — IRREVERSIBLE",
             message=(
-                f"Permanently delete {len(selected_tags)} versions?\n\n"
+                f"Permanently delete {len(selected)} versions?\n\n"
                 f"{tag_list}\n\n"
-                f"⚠ {len(selected_tags)} files will be deleted from disk.\n"
+                f"⚠ {len(selected)} files will be deleted from disk.\n"
                 f"   There is NO undo for this operation."
             ),
-            button=["Cancel", "Yes, Delete All"],
+            button=["Yes, Delete All", "Cancel"],
             defaultButton="Cancel",
             cancelButton="Cancel",
             dismissString="Cancel",
         )
         if confirmed == "Yes, Delete All":
             failed = 0
-            for i in rows:
-                if i < len(visible):
-                    r = visible[i]
-                    if not delete_version(state["scenes_dir"], r.tag, r.file):
-                        failed += 1
+            for r in selected:
+                if not delete_version(state["scenes_dir"], r.tag, r.file):
+                    failed += 1
             if failed:
-                cmds.warning(f"MayaVC: {failed} of {len(rows)} deletions failed")
+                cmds.warning(f"MayaVC: {failed} of {len(selected)} deletions failed")
             do_refresh()
 
     def on_save_commit():
@@ -619,7 +1010,7 @@ def show():
             return
 
         # Commit
-        if git_amend_commit(state["scenes_dir"], cur, cur_ver, append_msg.strip()):
+        if vc_amend_commit(state["scenes_dir"], cur, cur_ver, append_msg.strip()):
             cmds.warning(f"MayaVC: commit appended to {tag}")
             do_refresh()
         else:
@@ -629,20 +1020,108 @@ def show():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
             return
-        r = state["visible"][min(rows)]
-        if load_version(state["scenes_dir"], r.tag):
+        row = min(rows)
+        tag = _tag_for_row(row)
+        if not tag:
+            return
+        if load_version(state["scenes_dir"], tag):
             do_refresh()
 
     def on_folder():
+        """Open the scenes folder and select the file in Explorer."""
         sd = state["scenes_dir"]
-        if sd and os.path.isdir(sd):
-            os.startfile(sd)
+        if not sd or not os.path.isdir(sd):
+            return
+        # Try to select the current row's file
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if rows:
+            row = min(rows)
+            tag = _tag_for_row(row)
+            r = state.get("tag_map", {}).get(tag)
+            if r and r.file:
+                fpath = os.path.join(sd, r.file)
+                if os.path.isfile(fpath):
+                    # Windows: explorer /select, highlights the file
+                    subprocess.run(["explorer", "/select,", os.path.normpath(fpath)])
+                    return
+        os.startfile(sd)
+
+    def on_rename():
+        """Rename the selected version's file on disk + update JSON."""
+        import maya.cmds as cmds
+
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if not rows:
+            return
+        row = min(rows)
+        tag = _tag_for_row(row)
+        if not tag:
+            return
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
+        sd = state["scenes_dir"]
+        old_path = os.path.join(sd, r.file)
+        if not os.path.isfile(old_path):
+            cmds.warning(f"MayaVC: file not found — {r.file}")
+            return
+
+        # Prompt for new name (strip extension so user only edits the base)
+        old_base, old_ext = os.path.splitext(r.file)
+        result = cmds.promptDialog(
+            title="Rename Version File",
+            message=f"New name for {tag}:",
+            text=old_base,
+            button=["Rename", "Cancel"],
+            defaultButton="Rename",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if result == "Cancel":
+            return
+        new_name = (cmds.promptDialog(q=True, text=True) or "").strip()
+        if not new_name or new_name == old_base:
+            return
+
+        # Append original extension
+        new_name = new_name + old_ext
+
+        new_path = os.path.join(sd, new_name)
+        if os.path.exists(new_path):
+            cmds.warning(f"MayaVC: {new_name} already exists — rename cancelled")
+            return
+
+        try:
+            os.rename(old_path, new_path)
+        except Exception as e:
+            cmds.warning(f"MayaVC: rename failed - {e}")
+            return
+
+        # Update JSON
+        from core.vc_engine import _read_versions, _acquire_and_read, _write_versions_atomic, _unlock_file
+        lock, data = _acquire_and_read(sd)
+        if lock is not None:
+            try:
+                if tag in data:
+                    data[tag]["file"] = new_name
+                    _write_versions_atomic(sd, data)
+            finally:
+                _unlock_file(lock)
+
+        cmds.warning(f"MayaVC: renamed {r.file} → {new_name}")
+        do_refresh()
 
     def on_delete():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
             return
-        r = state["visible"][min(rows)]
+        row = min(rows)
+        tag = _tag_for_row(row)
+        if not tag:
+            return
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
         import maya.cmds as cmds
         confirmed = cmds.confirmDialog(
             title="⚠  DELETE VERSION — IRREVERSIBLE",
@@ -654,7 +1133,7 @@ def show():
                 f"⚠ This will DELETE the original project file from disk.\n"
                 f"   There is NO undo for this operation."
             ),
-            button=["Cancel", "Yes, Delete It"],
+            button=["Yes, Delete It", "Cancel"],
             defaultButton="Cancel",
             cancelButton="Cancel",
             dismissString="Cancel",
@@ -664,7 +1143,7 @@ def show():
                 do_refresh()
 
     def on_inc_save():
-        """Incremental save + commit dialog + git commit. Same as shelf_main."""
+        """Incremental save + commit dialog + commit. Same as shelf_main."""
         import maya.cmds as cmds
 
         d = state["scenes_dir"]
@@ -695,8 +1174,8 @@ def show():
             cmds.warning(f"MayaVC: save failed - {e}")
             return
 
-        # 4. Git commit + tag
-        if git_commit(d, new_path, new_ver, msg):
+        # 4. Record commit
+        if vc_commit(d, new_path, new_ver, msg):
             cmds.warning(f"MayaVC: v{new_ver:03d} committed - {msg}")
             do_refresh()
         else:
@@ -759,14 +1238,37 @@ def show():
     latest_only_btn.clicked.connect(on_latest_only)
     info_label.linkActivated.connect(lambda: _scroll_to_current())
     hdr.sectionResized.connect(_on_msg_col_resized)
+    hdr.sectionClicked.connect(_on_section_clicked)
     table.itemSelectionChanged.connect(on_sel)
-    load_btn.clicked.connect(on_load)
-    folder_btn.clicked.connect(on_folder)
     delete_btn.clicked.connect(on_delete)
     save_commit_btn.clicked.connect(on_save_commit)
     inc_save_btn.clicked.connect(on_inc_save)
-    clear_cache_btn.clicked.connect(on_clear_cache)
-    perf_btn.clicked.connect(on_perf)
+
+    # ---- right-click context menu on table ----
+    table.setContextMenuPolicy(Qt.CustomContextMenu)
+    def on_context_menu(pos):
+        row = table.rowAt(pos.y())
+        if row < 0 or row >= table.rowCount():
+            return
+        # Select the row under cursor
+        table.selectRow(row)
+        menu = QMenu(table)
+        menu.addAction("Open", on_load)
+        menu.addAction("Rename", on_rename)
+        menu.addSeparator()
+        menu.addAction("Show in Folder", on_folder)
+        menu.exec_(table.viewport().mapToGlobal(pos))
+    table.customContextMenuRequested.connect(on_context_menu)
+
+    # ---- "?" help button menu (Clear Cache + Perf) ----
+    help_menu = QMenu(help_btn)
+    help_menu.addAction("Clear Cache", on_clear_cache)
+    help_menu.addAction("Performance", on_perf)
+    help_btn.setMenu(help_menu)
+    help_btn.setPopupMode(QToolButton.InstantPopup)
+
+    # Connect folder button now that _on_browse_project is defined
+    folder_btn.clicked.connect(_on_browse_project)
 
     do_refresh()
 
