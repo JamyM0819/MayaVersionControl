@@ -8,7 +8,7 @@ Maya 文件增量保存 + 版本历史管理，零依赖，开箱即用。
 2. 在 Maya 里打开 Script Editor（脚本编辑器），运行：
 
 ```python
-exec(open(r"D:\MayaScripts\MayaVersionControl\install.py").read())
+exec(open(r"install.py的文件保存路径").read())
 ```
 
 3. 重启 Maya 或刷新 Shelf，会看到 **VC History** 按钮，点击打开版本历史面板（所有功能都在面板里）
