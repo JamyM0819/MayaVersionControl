@@ -464,27 +464,14 @@ def show():
         try:
             state["records"] = get_history(d, filter_scene)
             # Apply pending Version sort if set, otherwise restore last manual sort
+            # Apply saved sort order (set by last column click)
+            order = state.get("_record_order")
+            if order:
+                order_set = {tag: i for i, tag in enumerate(order)}
+                state["records"].sort(key=lambda r: order_set.get(r.tag, 9999))
             sk = state.pop("_sort_records_key", None)
             if sk:
                 state["records"].sort(key=sk)
-            else:
-                last_section = state.get("_last_sort_section")
-                if last_section is not None:
-                    rev = state.get(f"sort_dir_{last_section}", False)
-                    # Simple text sort for Name/Date/Message
-                    col_map = {0: "file", 2: "date", 3: "message"}
-                    if last_section in (0, 2, 3):
-                        key_attr = col_map.get(last_section, "file")
-                        state["records"].sort(
-                            key=lambda r: (getattr(r, key_attr, "") or "").lower(),
-                            reverse=rev)
-                    # Version sort can't be restored without name_order context
-                    # so it falls back to date order (default)
-                    elif last_section == 1:
-                        rev = state.get("ver_desc", True)
-                        state["records"].sort(
-                            key=lambda r: os.path.splitext(r.file.lower())[0] if r.file else "",
-                            reverse=rev)
             # Count always reflects current scene's base name versions
             if scene_name and not filter_scene:
                 my_count = sum(1 for r in state["records"]
@@ -606,7 +593,9 @@ def show():
                 table.resizeRowToContents(i)
 
         # --- group colours (deferred until Qt applies the sort indicator) ---
-        QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag))
+        # Group colours only for Name/Version sorts
+        ls = state.get("_last_sort_section")
+        QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag, sort_section=ls))
 
         # Auto-scroll to current version row
         _scroll_to_current()
@@ -826,6 +815,7 @@ def show():
 
                 state["_sort_records_key"] = _sk
                 do_refresh(latest_only=state["latest_only"])
+                state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
                 table.horizontalHeader().setSortIndicator(0, Qt.AscendingOrder)
             finally:
                 _on_sort_changed._busy = False
@@ -852,6 +842,8 @@ def show():
                     if item is not None:
                         table.setItem(tgt, c, item)
             table.horizontalHeader().setSortIndicator(section, order)
+            # Save current order for restoration after do_refresh
+            state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
         visible = state.get("visible")
         cur_tag = state.get("cur_tag")
         if visible:
