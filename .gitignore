@@ -50,3 +50,4 @@ dist/
 test/
 test/New_Project/scenes
 .reasonix/
+reasonix.toml
