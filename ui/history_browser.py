@@ -431,7 +431,7 @@ def show():
     # Footer: version + author + GitHub link
     footer = QHBoxLayout()
     h = get_plugin_repo_hash() or ""
-    ver_text = f"v1.0.1"
+    ver_text = f"v1.0.2"
     if h:
         ver_text += f"  [{h[:7]}]"
     ver_label = QLabel(ver_text)
@@ -1021,30 +1021,39 @@ def show():
 
         tag_list = "\n".join(f"  {r.tag}  ({r.date})" for r in selected)
         import maya.cmds as cmds
-        confirmed = cmds.confirmDialog(
+        import random
+        count = len(selected)
+        code = str(random.randint(100, 999))
+        result = cmds.promptDialog(
             title="⚠  DELETE MULTIPLE VERSIONS — IRREVERSIBLE",
             message=(
-                f"Permanently delete {len(selected)} versions?\n\n"
+                f"Permanently delete {count} versions?\n\n"
                 f"{tag_list}\n\n"
-                f"⚠ {len(selected)} files will be deleted from disk.\n"
-                f"   There is NO undo for this operation."
+                f"⚠ {count} files will be deleted from disk.\n"
+                f"   Type {code} to confirm:"
             ),
-            button=["Yes, Delete All", "Cancel"],
+            text="",
+            button=["Confirm", "Cancel"],
             defaultButton="Cancel",
             cancelButton="Cancel",
             dismissString="Cancel",
         )
-        if confirmed == "Yes, Delete All":
-            failed = 0
-            for r in selected:
-                if not delete_version(state["scenes_dir"], r.tag, r.file):
-                    failed += 1
-            if failed:
-                cmds.warning(f"MayaVC: {failed} of {len(selected)} deletions failed")
-            do_refresh()
-            # Auto-exit edit mode after delete
-            if state.get("edit_mode"):
-                on_edit()
+        if result != "Confirm":
+            return
+        entered = cmds.promptDialog(q=True, text=True) or ""
+        if entered.strip() != code:
+            cmds.warning(f"MayaVC: delete cancelled (code mismatch)")
+            return
+        failed = 0
+        for r in selected:
+            if not delete_version(state["scenes_dir"], r.tag, r.file):
+                failed += 1
+        if failed:
+            cmds.warning(f"MayaVC: {failed} of {len(selected)} deletions failed")
+        do_refresh()
+        # Auto-exit edit mode after delete
+        if state.get("edit_mode"):
+            on_edit()
 
     def on_save_commit():
         """Save current Maya scene and append a commit to the current version tag."""
@@ -1312,26 +1321,34 @@ def show():
         if not r:
             return
         import maya.cmds as cmds
-        confirmed = cmds.confirmDialog(
+        import random
+        code = str(random.randint(100, 999))
+        result = cmds.promptDialog(
             title="⚠  DELETE VERSION — IRREVERSIBLE",
             message=(
                 f"Permanently delete this version?\n\n"
                 f"  Tag:    {r.tag}\n"
                 f"  File:   {r.file}\n"
                 f"  Date:   {r.date}\n\n"
-                f"⚠ This will DELETE the original project file from disk.\n"
-                f"   There is NO undo for this operation."
+                f"⚠ This will DELETE the file from disk.\n"
+                f"   Type {code} to confirm:"
             ),
-            button=["Yes, Delete It", "Cancel"],
+            text="",
+            button=["Confirm", "Cancel"],
             defaultButton="Cancel",
             cancelButton="Cancel",
             dismissString="Cancel",
         )
-        if confirmed == "Yes, Delete It":
-            if delete_version(state["scenes_dir"], r.tag, r.file):
-                do_refresh()
-                if state.get("edit_mode"):
-                    on_edit()
+        if result != "Confirm":
+            return
+        entered = cmds.promptDialog(q=True, text=True) or ""
+        if entered.strip() != code:
+            cmds.warning(f"MayaVC: delete cancelled (code mismatch)")
+            return
+        if delete_version(state["scenes_dir"], r.tag, r.file):
+            do_refresh()
+            if state.get("edit_mode"):
+                on_edit()
 
     def on_inc_save():
         """Incremental save + commit dialog + commit. Same as shelf_main."""
