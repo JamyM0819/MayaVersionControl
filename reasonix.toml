@@ -1,2 +1,0 @@
-[permissions]
-allow = ["Bash(cd \"F:/claude project/MayaVersionControl\" && python -c \"\nwith open('test_dummy.mb', 'w') as f: f.write('test')\nwith open('test_dummy.mb:mayaVC_uuid', 'w') as f: f.write('uuid-abc123')\nwith open('test_dummy.mb:mayaVC_uuid', 'r') as f: print('read:', f.read())\nimport os; os.remove('test_dummy.mb'); print('NTFS stream OK')\n\")", "Edit", "Bash(cd \"F:/claude project/MayaVersionControl\" && python -c \"import ast; ast.parse(open('ui/history_browser.py', encoding='utf-8').read()); print('OK')\")"]
