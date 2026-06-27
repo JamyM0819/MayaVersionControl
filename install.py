@@ -1,111 +1,102 @@
 """
-install.py - Maya Version Control one-click installer
+MayaVersionControl - One-click installer
 
-Run in Maya Script Editor (UTF-8 safe):
-    exec(open(r"F:\\path\\to\\MayaVersionControl\\install.py", encoding="utf-8").read())
-
-Automatically:
-  1. Add plugin path to userSetup.py sys.path
-  2. Add two buttons to current Maya shelf
+Drag this file into Maya viewport to install.
+Or run in Script Editor:
+    exec(open(r"F:\\path\\to\\install.py", encoding="utf-8").read())
 """
 
-import os
-import sys
+import os, sys
 
-# Hardcoded install path - change this if you move the plugin folder
-_PACKAGE_DIR = r"F:\temp\jm\claude_project\MayaVersionControl"
+# ── Detect plugin folder ──
+_PACKAGE_DIR = None
+
+# Try __file__ first (works when drag-dropped or run as a script)
+try:
+    _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    pass
+
+# If __file__ failed, ask user via file dialog
+if not _PACKAGE_DIR:
+    try:
+        import maya.cmds as cmds
+        result = cmds.fileDialog2(
+            dialogStyle=1, fileMode=3,
+            caption="Select the MayaVersionControl folder", okCaption="Install",
+        )
+        if result:
+            _PACKAGE_DIR = os.path.normpath(result[0])
+    except Exception:
+        pass
+
+if not _PACKAGE_DIR or not os.path.isfile(os.path.join(_PACKAGE_DIR, "shelf_main.py")):
+    raise RuntimeError(
+        "Cannot find MayaVersionControl folder.\n\n"
+        "Drag install.py into Maya viewport to auto-detect,\n"
+        "or run exec() from Script Editor and select the folder when prompted."
+    )
 
 import maya.cmds as cmds
+import maya.mel as mel
 
 
-def _get_user_setup_path() -> str:
-    """Returns the path to userSetup.py in Maya user scripts directory."""
-    maya_version = cmds.about(version=True)
-    # Maya 2025+ userSetup.py location
-    prefs = os.path.join(os.environ.get("MAYA_APP_DIR", ""), maya_version, "scripts")
-    if not os.path.isdir(prefs):
-        # try default location
-        home = os.path.expanduser("~")
-        prefs = os.path.join(home, "Documents", "maya", maya_version, "scripts")
-    os.makedirs(prefs, exist_ok=True)
-    return os.path.join(prefs, "userSetup.py")
+# ── Step 1: userSetup.py ──
+maya_ver = cmds.about(version=True)
+prefs = os.environ.get("MAYA_APP_DIR", "")
+if prefs:
+    user_setup = os.path.join(prefs, maya_ver, "scripts", "userSetup.py")
+else:
+    home = os.path.expanduser("~")
+    user_setup = os.path.join(home, "Documents", "maya", maya_ver, "scripts", "userSetup.py")
+os.makedirs(os.path.dirname(user_setup), exist_ok=True)
 
-
-def install_user_setup():
-    """Append plugin path to userSetup.py so Maya finds it on startup."""
-    user_setup = _get_user_setup_path()
-    block = f"""
-# === Maya Version Control Plugin ===
+block = f"""
+# === MayaVC ===
 import sys
-_mvc_path = r"{_PACKAGE_DIR}"
-if _mvc_path not in sys.path:
-    sys.path.insert(0, _mvc_path)
+if r"{_PACKAGE_DIR}" not in sys.path:
+    sys.path.insert(0, r"{_PACKAGE_DIR}")
 """
-    if os.path.exists(user_setup):
-        with open(user_setup, "r", encoding="utf-8") as f:
-            existing = f.read()
-        if _PACKAGE_DIR in existing:
-            print(f"MayaVC: userSetup.py already contains plugin path, skip.")
-            return user_setup
-        with open(user_setup, "a", encoding="utf-8") as f:
-            f.write(block)
-    else:
-        with open(user_setup, "w", encoding="utf-8") as f:
-            f.write(block)
-    print(f"MayaVC: Updated userSetup.py -> {user_setup}")
-    return user_setup
+if os.path.exists(user_setup):
+    with open(user_setup, "r", encoding="utf-8") as f:
+        if _PACKAGE_DIR not in f.read():
+            with open(user_setup, "a", encoding="utf-8") as f:
+                f.write(block)
+else:
+    with open(user_setup, "w", encoding="utf-8") as f:
+        f.write(block)
 
+# ── Step 2: Shelf button (install to currently active tab) ──
+shelf_tab = None
+try:
+    # Use active tab
+    shelf_top = mel.eval("$tmp=$gShelfTopLevel")
+    shelf_tab = cmds.shelfTabLayout(shelf_top, query=True, selectTab=True)
+except Exception:
+    pass
+if not shelf_tab:
+    # Fallback: use first available tab
+    tabs = cmds.lsUI(type="shelfTabLayout") or []
+    shelf_tab = tabs[0] if tabs else None
+if not shelf_tab:
+    raise RuntimeError("No shelf tab found. Open Maya's shelf first.")
 
-def install_shelf_buttons():
-    """Add MayaVC buttons to the first available Maya shelf tab."""
-    import maya.mel as mel
-
-    # Dump all UI elements to find shelf tabs
-    shelf_tabs = cmds.lsUI(type="shelfTabLayout") or []
-
-    if not shelf_tabs:
-        cmds.warning("MayaVC: No shelf tab found. Please open Maya first.")
-        return
-
-    shelf_tab = shelf_tabs[0]
-    print(f"MayaVC: Using shelf tab = {shelf_tab}")
-
-    cmds.shelfButton(
-        parent=shelf_tab,
-        label="VC History",
-        annotation="MayaVC - Version History Browser",
-        image="menuIconSave.png",
-        imageOverlayLabel="VC",
-        command=f"""
+cmds.shelfButton(
+    parent=shelf_tab,
+    label="MayaVC",
+    annotation="MayaVC - Version History Browser\nClick to open version history",
+    image=os.path.join(_PACKAGE_DIR, "MayaVersionControl_icon.png"),
+    command=f"""
 import sys
 sys.path.insert(0, r"{_PACKAGE_DIR}")
 from shelf_main import show_history
 show_history()
 """,
-        sourceType="python",
-        width=35,
-    )
+    sourceType="python",
+)
+mel.eval("saveAllShelves $gShelfTopLevel")
 
-    # Save shelf so buttons persist across Maya restarts
-    try:
-        mel.eval("saveAllShelves $gShelfTopLevel")
-    except Exception:
-        pass
-
-    print(f"MayaVC: Shelf button added to {shelf_tab}.")
-
-
-def install():
-    """One-click install"""
-    print("=" * 60)
-    print("  Maya Version Control Plugin - Install")
-    print("=" * 60)
-    install_user_setup()
-    install_shelf_buttons()
-    print()
-    print("  Done! Find VC History button on your Maya shelf.")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    install()
+print(f"\n{'='*60}")
+print("  MayaVC installed successfully!")
+print(f"  Folder: {_PACKAGE_DIR}")
+print(f"{'='*60}\n")

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QStyle
 from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
@@ -34,27 +35,19 @@ _COLLAPSED_STATE = {}  # tag -> True/False, in-memory; write to Maya optionVar
 
 
 def _load_collapsed():
-    """Load collapsed state from Maya optionVars."""
     global _COLLAPSED_STATE
+    _COLLAPSED_STATE = {}
+    # Clear stale Maya optionVar to prevent old expanded state
     try:
         import maya.cmds as cmds
-        raw = cmds.optionVar(q="MayaVC_collapsed") or ""
-        for item in raw.split(";;"):
-            if "=" in item:
-                k, v = item.split("=", 1)
-                _COLLAPSED_STATE[k] = v == "1"
+        if cmds.optionVar(exists="MayaVC_collapsed"):
+            cmds.optionVar(remove="MayaVC_collapsed")
     except Exception:
         pass
 
 
 def _save_collapsed():
-    """Persist collapsed state to Maya optionVars."""
-    try:
-        import maya.cmds as cmds
-        parts = [f"{k}={1 if v else 0}" for k, v in _COLLAPSED_STATE.items()]
-        cmds.optionVar(sv=("MayaVC_collapsed", ";;".join(parts)))
-    except Exception:
-        pass
+    pass  # only in-memory, cleared on window close
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +152,7 @@ class _SortableItem(QTableWidgetItem):
 
 def show():
     """Show the history browser. Always creates a fresh window."""
+    print("[MayaVC] LOADED — fix4 (2026-06-28)")
     _load_collapsed()
 
     mw = _get_maya_window()
@@ -368,7 +362,9 @@ def show():
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table.setAlternatingRowColors(False)
+    table.setShowGrid(True)
+    table.setStyleSheet("QTableWidget { gridline-color: #262626; }")
+    table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
@@ -388,6 +384,27 @@ def show():
     # Custom delegate: paint 10px green bar for current version row
     class GreenBarDelegate(QStyledItemDelegate):
         def paint(self, painter, option, index):
+            # Column 3: multi-line with separator coloring
+            if index.column() == 3:
+                text = index.data(Qt.DisplayRole) or ""
+                if "\n" in text and any(c in text for c in "┈─"):
+                    # Paint background — use item's actual background color
+                    bg = index.data(Qt.BackgroundRole)
+                    if bg is None:
+                        bg = option.palette.highlight() if option.state & QStyle.State_Selected else option.palette.base()
+                    painter.fillRect(option.rect, bg)
+                    # Draw lines
+                    lines = text.split("\n")
+                    sep_color = QColor("#5c5b5b")
+                    normal = option.palette.text().color()
+                    fm = painter.fontMetrics()
+                    y = option.rect.y() + fm.ascent()
+                    for line in lines:
+                        painter.setPen(sep_color if line.strip() and line.strip()[0] in "┈─" else normal)
+                        painter.drawText(option.rect.x() + 4, y, line)
+                        y += fm.height()
+                    return
+            # Default + green bar for current version
             super().paint(painter, option, index)
             if index.column() == 0 and index.data(Qt.UserRole + 1):
                 painter.fillRect(option.rect.x(), option.rect.y(),
@@ -431,7 +448,7 @@ def show():
     # Footer: version + author + GitHub link
     footer = QHBoxLayout()
     h = get_plugin_repo_hash() or ""
-    ver_text = f"v1.0.2"
+    ver_text = f"v1.0.3"
     if h:
         ver_text += f"  [{h[:7]}]"
     ver_label = QLabel(ver_text)
@@ -635,9 +652,10 @@ def show():
                 name_cell.setBackground(QColor("#2d6a4f"))
                 name_cell.setForeground(QColor("#a3e635"))
 
-            # Expand row height for expanded (▲) messages
+            # Expand row height for expanded messages (deferred for layout)
             if "\n" in folded:
-                table.resizeRowToContents(i)
+                ri = i
+                QTimer.singleShot(20, lambda r=ri: _safe_resize_row(r))
 
         # --- group colours (deferred until Qt applies the sort indicator) ---
         # Group colours only for Name/Version sorts
@@ -668,6 +686,13 @@ def show():
         pad = 12
         avail = max(10, col_w - pad)
         return max(15, int(avail / cjk_w))
+
+    def _safe_resize_row(row):
+        try:
+            if row < table.rowCount():
+                table.resizeRowToContents(row)
+        except Exception:
+            pass
 
     def _split_ts_body(line):
         """Split a message line into (timestamp_prefix, body_text).
@@ -707,48 +732,39 @@ def show():
         return "\n".join(out)
 
     def _build_msg_display(full_msg, collapsed, wrap_chars):
-        """Build the display text for a message cell.
-
-        Every record starts with a timestamp line, followed by its body
-        indented beneath.  This guarantees timestamp and body text never
-        overlap vertically — the timestamp is always on its own short line.
+        """Build display text.
+        \n\n = amend boundary.  \n alone = body newline within one commit.
         """
-        if "\n" not in full_msg:
-            # Single commit — no arrow, timestamp on own line, body wrapped below
-            ts, body = _split_ts_body(full_msg)
-            if ts:
-                body_text = _wrap_body(body, wrap_chars, "   ")
-                if body_text.strip():
-                    return ts.rstrip() + "\n" + body_text
-                return ts + body
-            return _wrap_body(full_msg, wrap_chars, "")
-
-        # Multi-commit (vc_amend_commit appends) — newest first
-        records = list(reversed(full_msg.split("\n")))
-        blocks = []
-        for i, rec in enumerate(records):
-            ts, body = _split_ts_body(rec)
+        # Detect multi-commit: messages joined by \x1e (record separator)
+        if "\x1e" in full_msg:
+            commits = full_msg.split("\x1e")
             if collapsed:
-                # Show only the newest (first) record
-                arrow = "▶ "
-                if ts:
-                    body_text = _wrap_body(body, wrap_chars, "      ")
-                    if body_text.strip():
-                        blocks.append(arrow + ts.rstrip() + "\n" + body_text)
-                    else:
-                        blocks.append(arrow + ts + body)
-                else:
-                    blocks.append(arrow + _wrap_body(rec, wrap_chars, "      "))
-                break  # one record in collapsed mode
+                # Show newest commit only, single-line
+                ts, body = _split_ts_body(commits[-1])
+                body_flat = body.replace("\n", " ").strip() if body else ""
+                return ("▶ " + ts.rstrip() if ts else "▶ ") + body_flat[:wrap_chars]
             else:
-                # Expanded: each record gets its own ts line + body block
-                arrow = "▼ " if not blocks else "   "  # ▼ on newest, rest plain
-                if ts:
-                    body_text = _wrap_body(body, wrap_chars, "      ")
-                    blocks.append(arrow + ts.rstrip() + "\n" + body_text)
-                else:
-                    blocks.append(arrow + _wrap_body(rec, wrap_chars, "      "))
-        return "\n".join(blocks)
+                # Show all commits, newest first, with separator lines
+                out = []
+                sep = "┈" * (wrap_chars // 2)
+                for i, c in enumerate(reversed(commits)):
+                    ts, body = _split_ts_body(c)
+                    prefix = "▼ " if i == 0 else "   "
+                    if ts:
+                        out.append(prefix + ts.rstrip() + "\n" + body.strip())
+                    else:
+                        out.append(prefix + c.strip())
+                    if i < len(commits) - 1:
+                        out.append(sep)
+                return "\n".join(out)
+        
+        # Single commit
+        ts, body = _split_ts_body(full_msg)
+        if collapsed:
+            body_flat = body.replace("\n", " ").strip() if body else ""
+            return (ts.rstrip() + " " + body_flat)[:wrap_chars] if ts else full_msg[:wrap_chars]
+        else:
+            return (ts.rstrip() + "\n" + body.strip()) if ts else full_msg
 
     def _apply_group_colours(visible, cur_tag, sort_section=-1):
         """Paint alternating backgrounds per base-name group when sorted by
@@ -815,7 +831,8 @@ def show():
             if item:
                 if item.text() != new_text:
                     item.setText(new_text)
-                table.resizeRowToContents(i)
+                ri = i
+                QTimer.singleShot(20, lambda r=ri: _safe_resize_row(r))
 
     def _on_msg_col_resized(col, old_w, new_w):
         if col == 3 and new_w != old_w:
@@ -917,7 +934,7 @@ def show():
             QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag, sort_section=section))
 
     def _collapsed_for_tag(tag, full_msg, wrap_chars=None):
-        """Return the display text for message column, respecting collapse state."""
+        """Return display text, respecting collapse state."""
         if wrap_chars is None:
             wrap_chars = _msg_col_chars()
         collapsed = _COLLAPSED_STATE.get(tag, True)
@@ -965,7 +982,8 @@ def show():
         new_text = _collapsed_for_tag(tag, full_msg, wrap_chars=_msg_col_chars())
         msg_item = table.item(item.row(), 3)
         msg_item.setText(new_text)
-        table.resizeRowToContents(item.row())
+        ri = item.row()
+        QTimer.singleShot(20, lambda r=ri: _safe_resize_row(r))
 
     table.itemClicked.connect(on_msg_click)
     table.itemDoubleClicked.connect(lambda _: None if state.get("edit_mode") else on_load())
@@ -1208,7 +1226,25 @@ def show():
         # Show full text including timestamps (read-only visually, but editable)
         # On save, timestamps are preserved from original positions
         ts_re = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*')
-        old_messages = (r.message or "").split("\n")
+        # Detect multi-commit: \x1e separator (new) or multiple timestamp lines (legacy)
+        raw = r.message or ""
+        if "\x1e" in raw:
+            old_messages = raw.split("\x1e")
+        else:
+            ts_count = sum(1 for l in raw.split("\n") if ts_re.match(l.strip()))
+            if ts_count > 1:
+                # Legacy multi-commit: group by timestamp
+                commits, cur = [], []
+                for l in raw.split("\n"):
+                    if ts_re.match(l.strip()):
+                        if cur: commits.append("\n".join(cur))
+                        cur = [l]
+                    else:
+                        cur.append(l)
+                if cur: commits.append("\n".join(cur))
+                old_messages = commits
+            else:
+                old_messages = [raw]
 
         dlg = QDialog(win)
         dlg.setWindowTitle(f"Edit Description — {tag}")

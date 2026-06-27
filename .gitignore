@@ -3,12 +3,14 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
 
 # Maya scene files
 *.ma
 *.mb
-*.mel
+
+# MayaVC internal metadata (derived, not source)
+.mayavc/
+.mayavc/plugin_version
 
 # Maya preferences and cache
 prefs/
@@ -18,7 +20,6 @@ cache/
 
 # Log files
 *.log
-*.txt
 
 # Temporary files
 *.tmp
@@ -26,13 +27,15 @@ cache/
 *.swp
 *.swo
 *~
+*.bak
 
 # OS files
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# IDE files
+# IDE / editor files
+.claude/
 .vscode/
 .idea/
 *.swp
@@ -43,11 +46,12 @@ build/
 dist/
 *.egg-info/
 
-# MayaVC internal cache (derived — not source)
-.mayavc/plugin_version
-
-# Test files (keep test structure but ignore generated content)
+# Test files (ignore generated content)
 test/
-test/New_Project/scenes
+test/New_Project/
+
+# Reasonix AI assistant files
 .reasonix/
+AGENTS.md
+docs/
 reasonix.toml

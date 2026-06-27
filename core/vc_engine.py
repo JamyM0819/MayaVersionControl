@@ -546,7 +546,7 @@ def get_history(scenes_dir, scene_name=None):
             ts = entry.get("time", "")
         records.append(VersionRecord(
             tag=tag, date=ts,
-            message="\n".join(entry.get("messages", [])),
+            message="\x1e".join(entry.get("messages", [])),
             file=tag_file, hash="",
             uuid=entry.get("uuid", ""),
         ))
@@ -628,8 +628,40 @@ def load_version(scenes_dir, tag):
 
     target_path = os.path.join(scenes_dir, tag_file)
     if not os.path.isfile(target_path):
-        cmds.warning(f"MayaVC: file not found on disk — {tag_file}")
-        return False
+        # Last resort: ask user to locate the file manually
+        result = cmds.confirmDialog(
+            title="File Not Found",
+            message=f"MayaVC cannot find:\n{tag_file}\n\n"
+                    f"UUID: {entry.get('uuid', 'none')[:12]}...\n\n"
+                    "Locate it manually?",
+            button=["Browse...", "Cancel"],
+            defaultButton="Browse...",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if result == "Browse...":
+            chosen = cmds.fileDialog2(
+                fileMode=1,
+                startingDirectory=scenes_dir,
+                fileFilter="Maya Files (*.ma *.mb);;All Files (*.*)",
+                dialogStyle=1,
+                caption=f"Locate file for {tag}",
+            )
+            if chosen:
+                tag_file = os.path.basename(chosen[0])
+                target_path = chosen[0]
+                # Update JSON + write UUID to the file
+                if entry.get("uuid"):
+                    _write_ntfs_uuid(chosen[0], entry["uuid"])
+                entry["file"] = tag_file
+                lock, _ = _acquire_and_read(scenes_dir)
+                if lock is not None:
+                    try:
+                        _write_versions_atomic(scenes_dir, data)
+                    finally:
+                        _unlock_file(lock)
+        if not tag_file or not os.path.isfile(target_path):
+            return False
 
     _, ext = os.path.splitext(tag_file)
     is_binary = ext.lower() == ".mb"

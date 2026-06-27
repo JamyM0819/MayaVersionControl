@@ -1,5 +1,7 @@
 # MayaVC — Maya 版本控制插件
 
+[![Version](https://img.shields.io/badge/version-v1.0.3-blue)](https://github.com/JamyM0819/MayaVersionControl/releases)
+
 Maya 文件增量保存 + 版本历史管理，零依赖，开箱即用。
 <img width="805" height="827" alt="image" src="https://github.com/user-attachments/assets/65fb2be4-356d-45ef-8d13-043f80053872" />
 
