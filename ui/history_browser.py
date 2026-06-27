@@ -467,6 +467,13 @@ def show():
         return [r for r in records if r in selected]
 
     def do_refresh(filter_mode=None, latest_only=None):
+        # Save current selection tag to restore after rebuild
+        sel_tag = None
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if rows:
+            item = table.item(min(rows), 0)
+            sel_tag = item.data(Qt.UserRole) if item else None
+
         if filter_mode is not None:
             state["filter_mode"] = filter_mode
         if latest_only is not None:
@@ -632,6 +639,13 @@ def show():
 
         # Auto-scroll to current version row
         _scroll_to_current()
+
+        # Restore previous selection
+        if sel_tag:
+            for i in range(table.rowCount()):
+                if _tag_for_row(i) == sel_tag:
+                    table.selectRow(i)
+                    break
 
         # Deferred rewrap: column width may not be final during initial layout.
         QTimer.singleShot(0, _rewrap_all_messages)
@@ -947,7 +961,7 @@ def show():
         table.resizeRowToContents(item.row())
 
     table.itemClicked.connect(on_msg_click)
-    table.itemDoubleClicked.connect(lambda item: on_load())
+    table.itemDoubleClicked.connect(lambda _: None if state.get("edit_mode") else on_load())
 
     # Click on empty area → clear selection
     def on_table_clicked(index):
@@ -1022,6 +1036,9 @@ def show():
             if failed:
                 cmds.warning(f"MayaVC: {failed} of {len(selected)} deletions failed")
             do_refresh()
+            # Auto-exit edit mode after delete
+            if state.get("edit_mode"):
+                on_edit()
 
     def on_save_commit():
         """Save current Maya scene and append a commit to the current version tag."""
@@ -1307,6 +1324,8 @@ def show():
         if confirmed == "Yes, Delete It":
             if delete_version(state["scenes_dir"], r.tag, r.file):
                 do_refresh()
+                if state.get("edit_mode"):
+                    on_edit()
 
     def on_inc_save():
         """Incremental save + commit dialog + commit. Same as shelf_main."""
@@ -1424,11 +1443,16 @@ def show():
         # Select the row under cursor
         table.selectRow(row)
         menu = QMenu(table)
-        menu.addAction("Open", on_load)
-        menu.addAction("Rename", on_rename)
-        menu.addAction("Edit Description", on_edit_desc)
-        menu.addSeparator()
-        menu.addAction("Show in Folder", on_folder)
+        if state.get("edit_mode"):
+            menu.addAction("Delete This Version", on_delete)
+            menu.addSeparator()
+            menu.addAction("Show in Folder", on_folder)
+        else:
+            menu.addAction("Open", on_load)
+            menu.addAction("Rename", on_rename)
+            menu.addAction("Edit Description", on_edit_desc)
+            menu.addSeparator()
+            menu.addAction("Show in Folder", on_folder)
         menu.exec_(table.viewport().mapToGlobal(pos))
     table.customContextMenuRequested.connect(on_context_menu)
 
