@@ -11,14 +11,12 @@ Maya 文件增量保存 + 版本历史管理，零依赖，开箱即用。
 exec(open(r"D:\MayaScripts\MayaVersionControl\install.py").read())
 ```
 
-3. 重启 Maya 或刷新 Shelf，会看到两个按钮：
-   - **VC Save** — 增量保存
-   - **VC History** — 版本历史面板
+3. 重启 Maya 或刷新 Shelf，会看到 **VC History** 按钮，点击打开版本历史面板（所有功能都在面板里）
 
 ## 基本用法
 
 ### 增量保存
-点击 Shelf 上的 **VC Save**，或历史面板里的 **Incremental Save**：
+打开 **VC History** 面板，点击 **Incremental Save**：
 1. 弹出保存对话框，默认文件名为当前文件 + 下一版本号
 2. 填写描述（必填），点击 Commit
 3. 文件保存为 `{文件名}_v{版本号}.{ma/mb}`

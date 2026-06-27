@@ -72,26 +72,10 @@ def install_shelf_buttons():
 
     cmds.shelfButton(
         parent=shelf_tab,
-        label="VC Save",
-        annotation="MayaVC - Incremental Save + Git Commit",
-        image="menuIconSave.png",
-        imageOverlayLabel="VC",
-        command=f"""
-import sys
-sys.path.insert(0, r"{_PACKAGE_DIR}")
-from shelf_main import incremental_save_and_commit
-incremental_save_and_commit()
-""",
-        sourceType="python",
-        width=35,
-    )
-
-    cmds.shelfButton(
-        parent=shelf_tab,
         label="VC History",
         annotation="MayaVC - Version History Browser",
         image="menuIconSave.png",
-        imageOverlayLabel="Hist",
+        imageOverlayLabel="VC",
         command=f"""
 import sys
 sys.path.insert(0, r"{_PACKAGE_DIR}")
@@ -108,7 +92,7 @@ show_history()
     except Exception:
         pass
 
-    print(f"MayaVC: Shelf buttons added to {shelf_tab}.")
+    print(f"MayaVC: Shelf button added to {shelf_tab}.")
 
 
 def install():
@@ -119,7 +103,7 @@ def install():
     install_user_setup()
     install_shelf_buttons()
     print()
-    print("  Done! Find VC Save / VC History buttons on your Maya shelf.")
+    print("  Done! Find VC History button on your Maya shelf.")
     print("=" * 60)
 
 
