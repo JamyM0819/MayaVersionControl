@@ -21,7 +21,7 @@ from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
-                              _parse_ver, vc_amend_commit,
+                              _parse_ver, get_plugin_repo_hash, vc_amend_commit,
                               dry_run_next_version, vc_commit)
 from core.perf_monitor import show_perf_panel
 from ui.commit_dialog import show_commit_dialog, show_amend_dialog
@@ -343,8 +343,12 @@ def show():
     collapse_all_btn = QPushButton("全部展开")
     top_bar.addWidget(collapse_all_btn)
     latest_only_btn = QPushButton("只看最新")
+    latest_only_btn.setCheckable(True)
+    latest_only_btn.setStyleSheet("QPushButton:checked { background-color: #2980b9; color: #fff; }")
     top_bar.addWidget(latest_only_btn)
     filter_toggle_btn = QPushButton("只看当前")
+    filter_toggle_btn.setCheckable(True)
+    filter_toggle_btn.setStyleSheet("QPushButton:checked { background-color: #2980b9; color: #fff; }")
     top_bar.addWidget(filter_toggle_btn)
     lay.addLayout(top_bar)
 
@@ -412,7 +416,6 @@ def show():
     blay.addWidget(edit_btn)
     delete_selected_btn = QPushButton("Delete Selected")
     delete_selected_btn.setEnabled(False)
-    delete_selected_btn.setVisible(False)
     blay.addWidget(delete_selected_btn)
     blay.addStretch()
     refresh_btn = QPushButton("Refresh")
@@ -427,7 +430,11 @@ def show():
 
     # Footer: version + author + GitHub link
     footer = QHBoxLayout()
-    ver_label = QLabel("v1.0.0")
+    h = get_plugin_repo_hash() or ""
+    ver_text = f"v1.0.1"
+    if h:
+        ver_text += f"  [{h[:7]}]"
+    ver_label = QLabel(ver_text)
     ver_label.setStyleSheet("font-size: 10px; color: #999;")
     footer.addWidget(ver_label)
     footer.addStretch()
@@ -974,7 +981,6 @@ def show():
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < table.rowCount()
             delete_selected_btn.setEnabled(en)
-            delete_btn.setEnabled(True)
         else:
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < table.rowCount()
@@ -985,16 +991,16 @@ def show():
             # Exit edit mode
             edit_btn.setText("Edit")
             edit_btn.setStyleSheet("")
-            delete_selected_btn.setVisible(False)
-            delete_btn.setVisible(True)
+            delete_selected_btn.setEnabled(False)
+            delete_btn.setEnabled(True)
             table.setSelectionMode(QAbstractItemView.SingleSelection)
             state["edit_mode"] = False
         else:
             # Enter edit mode
             edit_btn.setText("Done")
             edit_btn.setStyleSheet("background-color: #e74c3c; color: #fff; font-weight: bold;")
-            delete_selected_btn.setVisible(True)
-            delete_btn.setVisible(False)
+            delete_selected_btn.setEnabled(True)
+            delete_btn.setEnabled(False)
             table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             state["edit_mode"] = True
 
@@ -1390,17 +1396,21 @@ def show():
     def on_toggle():
         if state["filter_mode"] == "all":
             filter_toggle_btn.setText("全部显示")
+            filter_toggle_btn.setChecked(True)
             do_refresh(filter_mode="current")
         else:
             filter_toggle_btn.setText("只看当前")
+            filter_toggle_btn.setChecked(False)
             do_refresh(filter_mode="all")
 
     def on_latest_only():
         if state["latest_only"]:
             latest_only_btn.setText("只看最新")
+            latest_only_btn.setChecked(False)
             do_refresh(latest_only=False)
         else:
             latest_only_btn.setText("历史版本")
+            latest_only_btn.setChecked(True)
             do_refresh(latest_only=True)
 
     def on_collapse_all():
