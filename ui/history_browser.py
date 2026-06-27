@@ -497,6 +497,7 @@ def show():
 
         visible = _visible_records(state["records"], state["latest_only"])
         state["visible"] = visible
+        state["tag_map"] = {r.tag: r for r in visible}
         cur_tag = state.get("cur_tag")
         cur_row = None
 
@@ -697,11 +698,19 @@ def show():
 
     def _rewrap_all_messages():
         """Re-wrap all visible message texts for current column width."""
-        visible = state.get("visible")
-        if not visible:
+        row_count = table.rowCount()
+        if row_count == 0:
             return
         w = _msg_col_chars()
-        for i, r in enumerate(visible):
+        tag_map = state.get("tag_map", {})
+        for i in range(row_count):
+            tag_item = table.item(i, 0)
+            if not tag_item:
+                continue
+            tag = tag_item.text()
+            r = tag_map.get(tag)
+            if not r:
+                continue
             full_msg = r.message or ""
             new_text = _collapsed_for_tag(r.tag, full_msg, wrap_chars=w)
             item = table.item(i, 2)
@@ -735,19 +744,26 @@ def show():
         cur_tag = state.get("cur_tag")
         if not cur_tag:
             return
-        visible = state.get("visible", [])
-        for i, r in enumerate(visible):
-            if r.tag == cur_tag:
+        row_count = table.rowCount()
+        for i in range(row_count):
+            tag_item = table.item(i, 0)
+            if tag_item and tag_item.text() == cur_tag:
                 table.selectRow(i)
-                table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
+                table.scrollToItem(tag_item, QTableWidget.PositionAtCenter)
                 break
 
     def on_msg_click(item):
         """Toggle collapse/expand for message column on double-click."""
         if item.column() != 2:
             return
-        r = state["visible"][item.row()]
-        tag = r.tag
+        row = item.row()
+        tag_item = table.item(row, 0)
+        if not tag_item:
+            return
+        tag = tag_item.text()
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
         full_msg = r.message or ""
         if "\n" not in full_msg:
             return
@@ -768,12 +784,12 @@ def show():
     def on_sel():
         if state["edit_mode"]:
             rows = {idx.row() for idx in table.selectedIndexes()}
-            en = bool(rows) and min(rows) < len(state.get("visible", []))
+            en = bool(rows) and min(rows) < table.rowCount()
             delete_selected_btn.setEnabled(en)
             delete_btn.setEnabled(True)
         else:
             rows = {idx.row() for idx in table.selectedIndexes()}
-            en = bool(rows) and min(rows) < len(state.get("visible", []))
+            en = bool(rows) and min(rows) < table.rowCount()
             load_btn.setEnabled(en)
             folder_btn.setEnabled(en)
             delete_btn.setEnabled(en)
@@ -804,20 +820,26 @@ def show():
         rows = sorted({idx.row() for idx in table.selectedIndexes()})
         if not rows:
             return
-        visible = state["visible"]
-        selected_tags = [visible[i].tag for i in rows if i < len(visible)]
-        if not selected_tags:
+        tag_map = state.get("tag_map", {})
+        # Read tags from table items (respects current sort order)
+        selected = []
+        for i in rows:
+            tag_item = table.item(i, 0)
+            if tag_item:
+                r = tag_map.get(tag_item.text())
+                if r:
+                    selected.append(r)
+        if not selected:
             return
 
-        tag_list = "\n".join(f"  {visible[i].tag}  ({visible[i].date})"
-                             for i in rows if i < len(visible))
+        tag_list = "\n".join(f"  {r.tag}  ({r.date})" for r in selected)
         import maya.cmds as cmds
         confirmed = cmds.confirmDialog(
             title="⚠  DELETE MULTIPLE VERSIONS — IRREVERSIBLE",
             message=(
-                f"Permanently delete {len(selected_tags)} versions?\n\n"
+                f"Permanently delete {len(selected)} versions?\n\n"
                 f"{tag_list}\n\n"
-                f"⚠ {len(selected_tags)} files will be deleted from disk.\n"
+                f"⚠ {len(selected)} files will be deleted from disk.\n"
                 f"   There is NO undo for this operation."
             ),
             button=["Yes, Delete All", "Cancel"],
@@ -827,13 +849,11 @@ def show():
         )
         if confirmed == "Yes, Delete All":
             failed = 0
-            for i in rows:
-                if i < len(visible):
-                    r = visible[i]
-                    if not delete_version(state["scenes_dir"], r.tag, r.file):
-                        failed += 1
+            for r in selected:
+                if not delete_version(state["scenes_dir"], r.tag, r.file):
+                    failed += 1
             if failed:
-                cmds.warning(f"MayaVC: {failed} of {len(rows)} deletions failed")
+                cmds.warning(f"MayaVC: {failed} of {len(selected)} deletions failed")
             do_refresh()
 
     def on_save_commit():
@@ -880,8 +900,12 @@ def show():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
             return
-        r = state["visible"][min(rows)]
-        if load_version(state["scenes_dir"], r.tag):
+        row = min(rows)
+        tag_item = table.item(row, 0)
+        if not tag_item:
+            return
+        tag = tag_item.text()
+        if load_version(state["scenes_dir"], tag):
             do_refresh()
 
     def on_folder():
@@ -893,7 +917,14 @@ def show():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
             return
-        r = state["visible"][min(rows)]
+        row = min(rows)
+        tag_item = table.item(row, 0)
+        if not tag_item:
+            return
+        tag = tag_item.text()
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
         import maya.cmds as cmds
         confirmed = cmds.confirmDialog(
             title="⚠  DELETE VERSION — IRREVERSIBLE",
