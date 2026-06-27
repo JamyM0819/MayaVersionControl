@@ -510,7 +510,8 @@ def show():
             if is_current:
                 cur_row = i
 
-            tag_item = QTableWidgetItem(r.tag or "-")
+            tag_item = QTableWidgetItem(r.file or r.tag or "-")
+            tag_item.setData(Qt.UserRole, r.tag)  # real tag for lookups
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
             date_item = QTableWidgetItem(r.date or "")
@@ -663,8 +664,7 @@ def show():
             seen = set()
             bases_in_order = []
             for i in range(row_count):
-                tag_item = table.item(i, 0)
-                tag = tag_item.text() if tag_item else ""
+                tag = _tag_for_row(i)
                 m = ver_re.match(tag)
                 base = m.group(1) if m else tag
                 if base not in seen:
@@ -673,8 +673,7 @@ def show():
             base_order = {b: idx for idx, b in enumerate(bases_in_order)}
 
             for i in range(row_count):
-                tag_item = table.item(i, 0)
-                tag = tag_item.text() if tag_item else ""
+                tag = _tag_for_row(i)
                 if cur_tag and tag == cur_tag:
                     continue
                 m = ver_re.match(tag)
@@ -687,8 +686,7 @@ def show():
         else:
             # Date (1) or Message (2) sort — clear all non-current backgrounds
             for i in range(row_count):
-                tag_item = table.item(i, 0)
-                tag = tag_item.text() if tag_item else ""
+                tag = _tag_for_row(i)
                 if cur_tag and tag == cur_tag:
                     continue
                 for col in range(3):
@@ -704,10 +702,9 @@ def show():
         w = _msg_col_chars()
         tag_map = state.get("tag_map", {})
         for i in range(row_count):
-            tag_item = table.item(i, 0)
-            if not tag_item:
+            tag = _tag_for_row(i)
+            if not tag:
                 continue
-            tag = tag_item.text()
             r = tag_map.get(tag)
             if not r:
                 continue
@@ -739,6 +736,13 @@ def show():
         collapsed = _COLLAPSED_STATE.get(tag, True)
         return _build_msg_display(full_msg, collapsed, wrap_chars)
 
+    def _tag_for_row(row):
+        """Get the tag (JSON key) for a visual table row."""
+        item = table.item(row, 0)
+        if not item:
+            return ""
+        return item.data(Qt.UserRole) or item.text()
+
     def _scroll_to_current():
         """Scroll to and select the current version row, if visible."""
         cur_tag = state.get("cur_tag")
@@ -746,10 +750,9 @@ def show():
             return
         row_count = table.rowCount()
         for i in range(row_count):
-            tag_item = table.item(i, 0)
-            if tag_item and tag_item.text() == cur_tag:
+            if _tag_for_row(i) == cur_tag:
                 table.selectRow(i)
-                table.scrollToItem(tag_item, QTableWidget.PositionAtCenter)
+                table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
                 break
 
     def on_msg_click(item):
@@ -757,10 +760,9 @@ def show():
         if item.column() != 2:
             return
         row = item.row()
-        tag_item = table.item(row, 0)
-        if not tag_item:
+        tag = _tag_for_row(row)
+        if not tag:
             return
-        tag = tag_item.text()
         r = state.get("tag_map", {}).get(tag)
         if not r:
             return
@@ -821,12 +823,11 @@ def show():
         if not rows:
             return
         tag_map = state.get("tag_map", {})
-        # Read tags from table items (respects current sort order)
         selected = []
         for i in rows:
-            tag_item = table.item(i, 0)
-            if tag_item:
-                r = tag_map.get(tag_item.text())
+            tag = _tag_for_row(i)
+            if tag:
+                r = tag_map.get(tag)
                 if r:
                     selected.append(r)
         if not selected:
@@ -901,10 +902,9 @@ def show():
         if not rows:
             return
         row = min(rows)
-        tag_item = table.item(row, 0)
-        if not tag_item:
+        tag = _tag_for_row(row)
+        if not tag:
             return
-        tag = tag_item.text()
         if load_version(state["scenes_dir"], tag):
             do_refresh()
 
@@ -918,10 +918,9 @@ def show():
         if not rows:
             return
         row = min(rows)
-        tag_item = table.item(row, 0)
-        if not tag_item:
+        tag = _tag_for_row(row)
+        if not tag:
             return
-        tag = tag_item.text()
         r = state.get("tag_map", {}).get(tag)
         if not r:
             return
