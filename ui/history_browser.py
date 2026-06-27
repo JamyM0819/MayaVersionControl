@@ -141,6 +141,20 @@ def _get_maya_window():
     return None
 
 
+class _SortableItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts by a custom sort key instead of display text."""
+    __slots__ = ("_sort_key",)
+
+    def __init__(self, text, sort_key):
+        super().__init__(text)
+        self._sort_key = sort_key
+
+    def __lt__(self, other):
+        if isinstance(other, _SortableItem):
+            return self._sort_key < other._sort_key
+        return super().__lt__(other)
+
+
 def show():
     """Show the history browser. Always creates a fresh window."""
     _load_collapsed()
@@ -338,27 +352,27 @@ def show():
     info_label.setCursor(Qt.PointingHandCursor)
     lay.addWidget(info_label)
 
-    table = QTableWidget(0, 3)
-    table.setHorizontalHeaderLabels(["Version", "Date", "Message"])
+    table = QTableWidget(0, 4)
+    table.setHorizontalHeaderLabels(["Name", "Version", "Date", "Message"])
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table.setAlternatingRowColors(False)  # we manage row colours ourselves
+    table.setAlternatingRowColors(False)
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(1, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(2, QHeaderView.Stretch)  # fill remaining width; resize triggers rewrap
-    # Default column widths
-    table.setColumnWidth(0, 150)
-    table.setColumnWidth(1, 140)
-    table.setColumnWidth(2, 300)
-    # Disable native word-wrap on Message column — we handle wrapping ourselves
+    hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+    hdr.setSectionResizeMode(2, QHeaderView.Interactive)
+    hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+    table.setColumnWidth(0, 130)
+    table.setColumnWidth(1, 60)
+    table.setColumnWidth(2, 130)
+    table.setColumnWidth(3, 280)
     table.setWordWrap(False)
     lay.addWidget(table, stretch=1)
 
-    # Enable click-to-sort on column headers
-    table.setSortingEnabled(True)
+    # We handle all sorting manually — Qt sorting stays OFF
+    table.setSortingEnabled(False)
 
     # Two group colours that alternate per-base-name when rows are sorted by
     # Version (i.e. grouped by base name).  Cleared on Date / Message sort.
@@ -406,7 +420,9 @@ def show():
         best = {}
         ver_re = re.compile(r'^(.+)_v(\d{3,})$')
         for r in records:
-            m = ver_re.match(r.tag)
+            # Use display name (what user sees) for grouping, not internal tag
+            display = os.path.splitext(r.file)[0] if r.file else r.tag
+            m = ver_re.match(display)
             if not m:
                 continue
             base = m.group(1)
@@ -447,6 +463,28 @@ def show():
 
         try:
             state["records"] = get_history(d, filter_scene)
+            # Apply pending Version sort if set, otherwise restore last manual sort
+            sk = state.pop("_sort_records_key", None)
+            if sk:
+                state["records"].sort(key=sk)
+            else:
+                last_section = state.get("_last_sort_section")
+                if last_section is not None:
+                    rev = state.get(f"sort_dir_{last_section}", False)
+                    # Simple text sort for Name/Date/Message
+                    col_map = {0: "file", 2: "date", 3: "message"}
+                    if last_section in (0, 2, 3):
+                        key_attr = col_map.get(last_section, "file")
+                        state["records"].sort(
+                            key=lambda r: (getattr(r, key_attr, "") or "").lower(),
+                            reverse=rev)
+                    # Version sort can't be restored without name_order context
+                    # so it falls back to date order (default)
+                    elif last_section == 1:
+                        rev = state.get("ver_desc", True)
+                        state["records"].sort(
+                            key=lambda r: os.path.splitext(r.file.lower())[0] if r.file else "",
+                            reverse=rev)
             # Count always reflects current scene's base name versions
             if scene_name and not filter_scene:
                 my_count = sum(1 for r in state["records"]
@@ -468,8 +506,29 @@ def show():
                 p = cmds.file(q=True, sn=True)
                 if p:
                     cur_base, cur_ext, cur_ver = _parse_ver(p)
+                    cur_tag = None
                     if cur_ver > 0:
                         cur_tag = f"{cur_base}_v{cur_ver:03d}"
+                        # Verify this tag actually exists in records
+                        if not any(rec.tag == cur_tag for rec in state["records"]):
+                            cur_tag = None  # parsed tag not in JSON — try UUID
+                    if not cur_tag:
+                        # Try UUID match against JSON (handles renamed files)
+                        from core.vc_engine import _read_ntfs_uuid
+                        cur_uid = _read_ntfs_uuid(p)
+                        if cur_uid:
+                            for rec in state["records"]:
+                                if rec.uuid == cur_uid:
+                                    cur_tag = rec.tag
+                                    break
+                        # UUID not found — fall back to filename match
+                        if not cur_tag:
+                            cur_fname = os.path.basename(p)
+                            for rec in state["records"]:
+                                if rec.file == cur_fname:
+                                    cur_tag = rec.tag
+                                    break
+                    if cur_tag:
                         # Look up time from history records
                         cur_time = ""
                         for rec in state["records"]:
@@ -508,24 +567,36 @@ def show():
                 cur_row = i
 
             display_name = os.path.splitext(r.file)[0] if r.file else (r.tag or "-")
-            tag_item = QTableWidgetItem(display_name)
+            # Split into name + version: "球体布尔_v003" → ("球体布尔", "v003")
+            m = re.match(r'^(.+)_v(\d{3,})$', display_name)
+            if m:
+                name_part, ver_part = m.group(1), f"v{m.group(2)}"
+            else:
+                name_part, ver_part = display_name, ""
+
+            tag_item = QTableWidgetItem(name_part)
             tag_item.setData(Qt.UserRole, r.tag)  # real tag for lookups
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
+
+            ver_item = QTableWidgetItem(ver_part)
+            ver_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(i, 1, ver_item)
+
             date_item = QTableWidgetItem(r.date or "")
             date_item.setTextAlignment(Qt.AlignCenter)
-            table.setItem(i, 1, date_item)
+            table.setItem(i, 2, date_item)
 
             # Message column: fold multi-line, store full as UserRole
             full_msg = r.message or ""
             folded = _collapsed_for_tag(r.tag, full_msg)
             msg_item = QTableWidgetItem(folded)
             msg_item.setData(Qt.UserRole, full_msg)
-            table.setItem(i, 2, msg_item)
+            table.setItem(i, 3, msg_item)
 
             # Highlight current version row
             if is_current:
-                for col in range(3):
+                for col in range(4):
                     cell = table.item(i, col)
                     cell.setBackground(QColor("#27AE60"))
                     cell.setForeground(QColor("#FFFFFF"))
@@ -536,10 +607,6 @@ def show():
 
         # --- group colours (deferred until Qt applies the sort indicator) ---
         QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag))
-
-        # Re-enable sorting AFTER items are in place — this makes Qt apply the
-        # current sort indicator to the fresh data without losing cell content.
-        table.setSortingEnabled(True)
 
         # Auto-scroll to current version row
         _scroll_to_current()
@@ -646,7 +713,6 @@ def show():
 
         if not visible:
             return
-        ver_re = re.compile(r'^(.+)_v(\d{3,})$')
 
         # ------ decide whether group colours should be ON ------
         if sort_section < 0:
@@ -655,17 +721,15 @@ def show():
         if row_count == 0:
             return
 
-        if sort_section == 0:
-            # Walk table rows top-to-bottom and collect the *first* occurrence
-            # of each base name — this gives us a stable bases_in_order sequence
-            # regardless of ascending/descending sort direction.
+        if sort_section in (0, 1):
+            # Walk table rows and collect first occurrence of each Name.
+            # Name column (0) already contains just the base, no version.
             seen = set()
             bases_in_order = []
             for i in range(row_count):
-                tag = _tag_for_row(i)
-                m = ver_re.match(tag)
-                base = m.group(1) if m else tag
-                if base not in seen:
+                name_item = table.item(i, 0)
+                base = name_item.text() if name_item else ""
+                if base and base not in seen:
                     seen.add(base)
                     bases_in_order.append(base)
             base_order = {b: idx for idx, b in enumerate(bases_in_order)}
@@ -674,10 +738,10 @@ def show():
                 tag = _tag_for_row(i)
                 if cur_tag and tag == cur_tag:
                     continue
-                m = ver_re.match(tag)
-                base = m.group(1) if m else tag
+                name_item = table.item(i, 0)
+                base = name_item.text() if name_item else ""
                 c = _GROUP_COLOURS[base_order.get(base, 0) % len(_GROUP_COLOURS)]
-                for col in range(3):
+                for col in range(4):
                     cell = table.item(i, col)
                     if cell:
                         cell.setBackground(c)
@@ -687,7 +751,7 @@ def show():
                 tag = _tag_for_row(i)
                 if cur_tag and tag == cur_tag:
                     continue
-                for col in range(3):
+                for col in range(4):
                     cell = table.item(i, col)
                     if cell:
                         cell.setBackground(QColor(255, 255, 255, 0))  # transparent
@@ -708,23 +772,89 @@ def show():
                 continue
             full_msg = r.message or ""
             new_text = _collapsed_for_tag(r.tag, full_msg, wrap_chars=w)
-            item = table.item(i, 2)
+            item = table.item(i, 3)
             if item and item.text() != new_text:
                 item.setText(new_text)
                 table.resizeRowToContents(i)
 
     def _on_msg_col_resized(col, old_w, new_w):
-        if col == 2 and new_w != old_w:
+        if col == 3 and new_w != old_w:
             _rewrap_all_messages()
 
+    def _on_section_clicked(section):
+        """Handle all column clicks when Qt sorting is disabled."""
+        if section == 1:
+            # Pre-scan Name order for Version sort
+            state["_pre_click_names"] = []
+            for i in range(table.rowCount()):
+                n = table.item(i, 0).text() if table.item(i, 0) else ""
+                state["_pre_click_names"].append(n)
+        # Toggle direction for this section
+        dir_key = f"sort_dir_{section}"
+        state[dir_key] = not state.get(dir_key, False)
+        state["_last_sort_section"] = section
+        order = Qt.DescendingOrder if state[dir_key] else Qt.AscendingOrder
+        # Trigger the sort
+        _on_sort_changed(section, order)
+
     def _on_sort_changed(section, order):
-        """When the user sorts by Date (1) or Message (2), clear group colours.
-        When they sort back to Version (0), re-apply them after Qt has
-        reshuffled the table rows."""
+        """Version (1) = apply pre-scanned Name order sort.
+        Other columns use Qt default."""
+        if section == 1:
+            if getattr(_on_sort_changed, "_busy", False):
+                return
+            _on_sort_changed._busy = True
+            try:
+                state["ver_desc"] = not state.get("ver_desc", True)
+                state["_last_sort_section"] = 1
+                desc = state["ver_desc"]
+
+                # Build name_order from pre-scanned names
+                pre_names = state.pop("_pre_click_names", [])
+                name_order = {}
+                next_idx = 0
+                for n in pre_names:
+                    if n and n not in name_order:
+                        name_order[n] = next_idx
+                        next_idx += 1
+
+                def _sk(r):
+                    n = os.path.splitext(r.file)[0] if r.file else r.tag
+                    m = re.match(r'^(.+)_v(\d+)$', n)
+                    name, ver = (m.group(1), int(m.group(2))) if m else (n, 0)
+                    return (name_order.get(name, 9999), -ver if desc else ver)
+
+                state["_sort_records_key"] = _sk
+                do_refresh(latest_only=state["latest_only"])
+                table.horizontalHeader().setSortIndicator(0, Qt.AscendingOrder)
+            finally:
+                _on_sort_changed._busy = False
+            vis = state.get("visible", [])
+            ct = state.get("cur_tag")
+            if vis:
+                QTimer.singleShot(0, lambda: _apply_group_colours(vis, ct, sort_section=1))
+            return
+        # Manual sort for Name (0), Date (2), Message (3)
+        if section in (0, 2, 3):
+            rev = (order == Qt.DescendingOrder)
+            row_count = table.rowCount()
+            rows = []
+            for i in range(row_count):
+                txt = table.item(i, section).text() if table.item(i, section) else ""
+                rows.append((txt.lower(), i))
+            rows.sort(reverse=rev)
+            all_items = []
+            for i in range(row_count):
+                all_items.append([table.takeItem(i, c) for c in range(4)])
+            for tgt, (_, src) in enumerate(rows):
+                for c in range(4):
+                    item = all_items[src][c]
+                    if item is not None:
+                        table.setItem(tgt, c, item)
+            table.horizontalHeader().setSortIndicator(section, order)
         visible = state.get("visible")
         cur_tag = state.get("cur_tag")
         if visible:
-            # Qt sorts asynchronously — defer so table rows are in final order
             QTimer.singleShot(0, lambda: _apply_group_colours(visible, cur_tag, sort_section=section))
 
     def _collapsed_for_tag(tag, full_msg, wrap_chars=None):
@@ -755,7 +885,7 @@ def show():
 
     def on_msg_click(item):
         """Toggle collapse/expand for message column on double-click."""
-        if item.column() != 2:
+        if item.column() != 3:
             return
         row = item.row()
         tag = _tag_for_row(row)
@@ -775,11 +905,12 @@ def show():
 
         # Update the item text immediately
         new_text = _collapsed_for_tag(tag, full_msg, wrap_chars=_msg_col_chars())
-        msg_item = table.item(item.row(), 2)
+        msg_item = table.item(item.row(), 3)
         msg_item.setText(new_text)
         table.resizeRowToContents(item.row())
 
     table.itemClicked.connect(on_msg_click)
+    table.itemDoubleClicked.connect(lambda item: on_load())
 
     def on_sel():
         if state["edit_mode"]:
@@ -1111,7 +1242,7 @@ def show():
     latest_only_btn.clicked.connect(on_latest_only)
     info_label.linkActivated.connect(lambda: _scroll_to_current())
     hdr.sectionResized.connect(_on_msg_col_resized)
-    hdr.sortIndicatorChanged.connect(_on_sort_changed)
+    hdr.sectionClicked.connect(_on_section_clicked)
     table.itemSelectionChanged.connect(on_sel)
     delete_btn.clicked.connect(on_delete)
     save_commit_btn.clicked.connect(on_save_commit)

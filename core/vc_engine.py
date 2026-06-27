@@ -431,19 +431,14 @@ def vc_amend_commit(scenes_dir, file_path, version, append_message):
 def get_history(scenes_dir, scene_name=None):
     """Return list of VersionRecord, newest first, from versions.json.
 
-    Args:
-        scenes_dir: Path to the scenes/ directory.
-        scene_name: If given, filter to versions of this scene base name
-                    (e.g. "hero" matches hero_v001, hero_v005).
-                    If None/empty, show all versions across all scenes.
+    Auto-syncs with disk: imports orphan files, matches renames via UUID,
+    removes entries whose files no longer exist.
     """
     data = _read_versions(scenes_dir)
-    if not data:
-        return []
-
     filter_base = (scene_name or "").lower()
+    needs_sync = False
 
-    # Build a map: lowercased "base_vnnn" → actual filename from disk
+    # ---- disk maps ----
     disk_files = {}
     try:
         for f in os.listdir(scenes_dir):
@@ -453,63 +448,74 @@ def get_history(scenes_dir, scene_name=None):
                 disk_files[root] = f
     except Exception:
         pass
-
-    # Build UUID → filename map from NTFS streams (for renamed files)
     uuid_disk = _build_uuid_disk_map(scenes_dir)
 
-    records = []
-    needs_sync = False  # True if we need to update JSON filenames
+    # ---- Phase 1: sync data with disk ----
+    # 1a. UUID-based filename sync for existing entries
     for tag, entry in data.items():
-        # Validate tag format: {base}_vNNN
-        tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
-        if not tag_ver:
+        if not re.match(r'^(.+)_v(\d{3,})$', tag):
             continue
-        if filter_base and tag_ver.group(1).lower() != filter_base:
+        if entry.get("file") and os.path.isfile(os.path.join(scenes_dir, entry["file"])):
             continue
+        uid = entry.get("uuid", "")
+        if uid and uid in uuid_disk:
+            entry["file"] = uuid_disk[uid]
+            needs_sync = True
 
-        # File name: prefer what's on disk, fall back to stored value
-        tag_file = disk_files.get(tag.lower(), "")
+    # 1b. Auto-import orphan disk files
+    covered_files = set()
+    for e in data.values():
+        f = e.get("file", "")
+        if f and os.path.isfile(os.path.join(scenes_dir, f)):
+            covered_files.add(f.lower())
 
-        # If tag-pattern match fails, try UUID-based matching
-        if not tag_file:
-            uid = entry.get("uuid", "")
-            if uid and uid in uuid_disk:
-                tag_file = uuid_disk[uid]
-                # Sync JSON entry with the new filename
-                entry["file"] = tag_file
-                needs_sync = True
+    for f_low, f_actual in disk_files.items():
+        if f_actual.lower() in covered_files:
+            continue
+        m = re.match(r'^(.+)_v(\d{3,})$', f_low)
+        if not m:
+            continue
+        base, ver = m.group(1), int(m.group(2))
+        tag = f"{base}_v{ver:03d}"
+        if tag in data:
+            continue
+        fpath = os.path.join(scenes_dir, f_actual)
+        uid = _read_ntfs_uuid(fpath)
 
-        if not tag_file:
-            tag_file = entry.get("file", "")
+        # Try UUID match first
+        matched = False
+        if uid:
+            for e in data.values():
+                if e.get("uuid", "") == uid:
+                    e["file"] = f_actual
+                    needs_sync = matched = True
+                    break
+        # Try merge with dead entry of same version
+        if not matched:
+            for e_tag, e_entry in list(data.items()):
+                ev = re.match(r'^(.+)_v(\d{3,})$', e_tag)
+                if not ev or int(ev.group(2)) != ver:
+                    continue
+                ef = e_entry.get("file", "")
+                if ef and not os.path.isfile(os.path.join(scenes_dir, ef)):
+                    e_entry["file"] = f_actual
+                    data[tag] = e_entry
+                    data[tag]["tag"] = tag
+                    del data[e_tag]
+                    needs_sync = matched = True
+                    break
+        # True orphan
+        if not matched:
+            ts = datetime.datetime.fromtimestamp(
+                os.path.getmtime(fpath)).strftime("%Y-%m-%d %H:%M")
+            data[tag] = {
+                "tag": tag, "file": f_actual, "time": ts,
+                "messages": [f"[{ts}] (auto-imported)"],
+            }
+            if uid:
+                data[tag]["uuid"] = uid
+            needs_sync = True
 
-        # Date: file mtime > stored time
-        date_str = ""
-        if tag_file:
-            file_path = os.path.join(scenes_dir, tag_file)
-            if os.path.isfile(file_path):
-                date_str = datetime.datetime.fromtimestamp(
-                    os.path.getmtime(file_path)).strftime("%Y-%m-%d %H:%M")
-        if not date_str:
-            date_str = entry.get("time", "")
-
-        # Message: join all message lines with newlines (history browser
-        # splits on "\n" to detect multi-commit entries)
-        messages = entry.get("messages", [])
-        full_msg = "\n".join(messages) if messages else ""
-
-        records.append(VersionRecord(
-            tag=tag,
-            date=date_str,
-            message=full_msg,
-            file=tag_file,
-            hash="",
-            uuid=entry.get("uuid", ""),
-        ))
-
-    # Sort by time descending (newest first), tiebreak by tag name descending
-    records.sort(key=lambda r: (r.date, r.tag), reverse=True)
-
-    # Auto-sync JSON if UUID matching found renamed files
     if needs_sync:
         lock, _ = _acquire_and_read(scenes_dir)
         if lock is not None:
@@ -518,6 +524,34 @@ def get_history(scenes_dir, scene_name=None):
             finally:
                 _unlock_file(lock)
 
+    # ---- Phase 2: build records ----
+    if not data:
+        return []
+
+    records = []
+    for tag, entry in data.items():
+        tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
+        if not tag_ver:
+            continue
+        if filter_base and tag_ver.group(1).lower() != filter_base:
+            continue
+        tag_file = disk_files.get(tag.lower(), "") or entry.get("file", "")
+        if not tag_file or not os.path.isfile(os.path.join(scenes_dir, tag_file)):
+            continue
+        try:
+            ts = datetime.datetime.fromtimestamp(
+                os.path.getmtime(os.path.join(scenes_dir, tag_file))
+            ).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            ts = entry.get("time", "")
+        records.append(VersionRecord(
+            tag=tag, date=ts,
+            message="\n".join(entry.get("messages", [])),
+            file=tag_file, hash="",
+            uuid=entry.get("uuid", ""),
+        ))
+
+    records.sort(key=lambda r: (r.date, r.tag), reverse=True)
     return records
 
 

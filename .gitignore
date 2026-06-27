@@ -49,3 +49,4 @@ dist/
 # Test files (keep test structure but ignore generated content)
 test/
 test/New_Project/scenes
+.reasonix/
