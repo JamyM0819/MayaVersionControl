@@ -332,7 +332,7 @@ def show():
         except Exception as e:
             cmds.warning(f"MayaVC: {e}")
 
-    collapse_all_btn = QPushButton("全部收起")
+    collapse_all_btn = QPushButton("全部展开")
     top_bar.addWidget(collapse_all_btn)
     latest_only_btn = QPushButton("只看最新")
     top_bar.addWidget(latest_only_btn)
@@ -668,14 +668,14 @@ def show():
                 return ts + body
             return _wrap_body(full_msg, wrap_chars, "")
 
-        # Multi-commit (vc_amend_commit appends)
-        records = full_msg.split("\n")
+        # Multi-commit (vc_amend_commit appends) — newest first
+        records = list(reversed(full_msg.split("\n")))
         blocks = []
-        for rec in records:
+        for i, rec in enumerate(records):
             ts, body = _split_ts_body(rec)
             if collapsed:
-                # Only show first record, single-line summary
-                arrow = "▼ "
+                # Show only the newest (first) record
+                arrow = "▶ "
                 if ts:
                     body_text = _wrap_body(body, wrap_chars, "      ")
                     if body_text.strip():
@@ -687,7 +687,7 @@ def show():
                 break  # one record in collapsed mode
             else:
                 # Expanded: each record gets its own ts line + body block
-                arrow = "▲ " if not blocks else "   "  # ▲ on first, rest plain
+                arrow = "▼ " if not blocks else "   "  # ▼ on newest, rest plain
                 if ts:
                     body_text = _wrap_body(body, wrap_chars, "      ")
                     blocks.append(arrow + ts.rstrip() + "\n" + body_text)
@@ -703,7 +703,7 @@ def show():
             return
 
         # ------ decide whether group colours should be ON ------
-        if sort_section < 0:
+        if sort_section is None or sort_section < 0:
             sort_section = table.horizontalHeader().sortIndicatorSection()
         row_count = table.rowCount()
         if row_count == 0:
@@ -1219,15 +1219,20 @@ def show():
             do_refresh(latest_only=True)
 
     def on_collapse_all():
-        """Collapse all expanded multi-commit messages."""
-        # Set all tags to collapsed
+        """Toggle collapse/expand all multi-commit messages."""
         visible = state.get("visible", [])
+        # Check if any multi-commit message is currently collapsed
+        any_collapsed = any(
+            "\n" in (r.message or "") and _COLLAPSED_STATE.get(r.tag, True)
+            for r in visible
+        )
+        new_state = not any_collapsed
         for r in visible:
             full_msg = r.message or ""
             if "\n" in full_msg:
-                _COLLAPSED_STATE[r.tag] = True
+                _COLLAPSED_STATE[r.tag] = new_state
         _save_collapsed()
-        # Just rewrap – do_refresh would also work but rewrap is lighter
+        collapse_all_btn.setText("全部展开" if new_state else "全部收起")
         _rewrap_all_messages()
 
     refresh_btn.clicked.connect(do_refresh)
