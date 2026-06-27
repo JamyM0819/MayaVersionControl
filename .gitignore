@@ -43,6 +43,9 @@ build/
 dist/
 *.egg-info/
 
+# MayaVC internal cache (derived — not source)
+.mayavc/plugin_version
+
 # Test files (keep test structure but ignore generated content)
 test/
 test/New_Project/scenes
