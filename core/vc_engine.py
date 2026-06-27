@@ -119,6 +119,57 @@ def _parse_ver(filename):
     return root, ext.lstrip("."), 0
 
 
+# ---------------------------------------------------------------------------
+# NTFS Alternate Data Stream helpers (UUID-based file identity)
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid
+import time as _time
+
+
+def _make_uuid():
+    """Generate a stable-ish UUID from timestamp + random (not content-based)."""
+    return _uuid.uuid4().hex
+
+
+def _write_ntfs_uuid(filepath, uid):
+    """Write *uid* into ``filepath:mayaVC_uuid`` NTFS stream.  No-op on failure."""
+    try:
+        with open(filepath + ":mayaVC_uuid", "w", encoding="utf-8") as f:
+            f.write(uid)
+    except Exception:
+        pass  # non-NTFS volume — silently skip
+
+
+def _read_ntfs_uuid(filepath):
+    """Read UUID from ``filepath:mayaVC_uuid`` NTFS stream.  Return "" on failure."""
+    try:
+        with open(filepath + ":mayaVC_uuid", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, IOError):
+        return ""
+
+
+def _build_uuid_disk_map(scenes_dir):
+    """Scan *scenes_dir* for .ma/.mb files, read their NTFS UUID streams.
+
+    Returns {uuid: actual_filename_on_disk}.
+    Only includes files where a UUID was successfully read.
+    """
+    uuid_map = {}
+    try:
+        for f in os.listdir(scenes_dir):
+            if not f.lower().endswith((".ma", ".mb")):
+                continue
+            fpath = os.path.join(scenes_dir, f)
+            uid = _read_ntfs_uuid(fpath)
+            if uid:
+                uuid_map[uid] = f
+    except Exception:
+        pass
+    return uuid_map
+
+
 def detect_next_version(scenes_dir, base=None):
     """Return (base, ext, next_ver).
 
@@ -279,14 +330,15 @@ def _acquire_and_read(scenes_dir):
 # ---------------------------------------------------------------------------
 
 class VersionRecord:
-    __slots__ = ("tag", "date", "message", "file", "hash")
+    __slots__ = ("tag", "date", "message", "file", "hash", "uuid")
 
-    def __init__(self, tag, date, message, file="", hash=""):
+    def __init__(self, tag, date, message, file="", hash="", uuid=""):
         self.tag = tag
         self.date = date
         self.message = message
         self.file = file       # basename of the scene file
         self.hash = hash       # always "" in JSON mode; kept for backward compat
+        self.uuid = uuid       # NTFS stream UUID for identity across renames
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +373,12 @@ def vc_commit(scenes_dir, file_path, version, message):
                 "time": now_str,
                 "messages": [msg_line],
             }
+
+        # Ensure UUID — generate + write to NTFS stream if missing
+        uid = data[tag].get("uuid", "") or _make_uuid()
+        data[tag]["uuid"] = uid
+        _write_ntfs_uuid(file_path, uid)
+
         return _write_versions_atomic(scenes_dir, data)
     finally:
         _unlock_file(lock)
@@ -358,6 +416,12 @@ def vc_amend_commit(scenes_dir, file_path, version, append_message):
             entry["messages"].append(append_line)
             entry["file"] = fname
             entry["time"] = now_str
+
+        # Ensure UUID
+        uid = data[tag].get("uuid", "") or _make_uuid()
+        data[tag]["uuid"] = uid
+        _write_ntfs_uuid(file_path, uid)
+
         return _write_versions_atomic(scenes_dir, data)
     finally:
         _unlock_file(lock)
@@ -390,7 +454,11 @@ def get_history(scenes_dir, scene_name=None):
     except Exception:
         pass
 
+    # Build UUID → filename map from NTFS streams (for renamed files)
+    uuid_disk = _build_uuid_disk_map(scenes_dir)
+
     records = []
+    needs_sync = False  # True if we need to update JSON filenames
     for tag, entry in data.items():
         # Validate tag format: {base}_vNNN
         tag_ver = re.match(r'^(.+)_v(\d{3,})$', tag)
@@ -400,7 +468,19 @@ def get_history(scenes_dir, scene_name=None):
             continue
 
         # File name: prefer what's on disk, fall back to stored value
-        tag_file = disk_files.get(tag.lower(), "") or entry.get("file", "")
+        tag_file = disk_files.get(tag.lower(), "")
+
+        # If tag-pattern match fails, try UUID-based matching
+        if not tag_file:
+            uid = entry.get("uuid", "")
+            if uid and uid in uuid_disk:
+                tag_file = uuid_disk[uid]
+                # Sync JSON entry with the new filename
+                entry["file"] = tag_file
+                needs_sync = True
+
+        if not tag_file:
+            tag_file = entry.get("file", "")
 
         # Date: file mtime > stored time
         date_str = ""
@@ -423,10 +503,21 @@ def get_history(scenes_dir, scene_name=None):
             message=full_msg,
             file=tag_file,
             hash="",
+            uuid=entry.get("uuid", ""),
         ))
 
     # Sort by time descending (newest first), tiebreak by tag name descending
     records.sort(key=lambda r: (r.date, r.tag), reverse=True)
+
+    # Auto-sync JSON if UUID matching found renamed files
+    if needs_sync:
+        lock, _ = _acquire_and_read(scenes_dir)
+        if lock is not None:
+            try:
+                _write_versions_atomic(scenes_dir, data)
+            finally:
+                _unlock_file(lock)
+
     return records
 
 
@@ -477,6 +568,26 @@ def load_version(scenes_dir, tag):
         return False
 
     tag_file = entry.get("file", "")
+
+    # Build UUID disk map for fallback matching
+    uuid_disk = _build_uuid_disk_map(scenes_dir)
+
+    # Try UUID-based matching if stored filename doesn't exist on disk
+    if tag_file:
+        target_path = os.path.join(scenes_dir, tag_file)
+        if not os.path.isfile(target_path):
+            uid = entry.get("uuid", "")
+            if uid and uid in uuid_disk:
+                tag_file = uuid_disk[uid]
+                # Sync JSON
+                entry["file"] = tag_file
+                lock, _ = _acquire_and_read(scenes_dir)
+                if lock is not None:
+                    try:
+                        _write_versions_atomic(scenes_dir, data)
+                    finally:
+                        _unlock_file(lock)
+
     if not tag_file:
         cmds.warning(f"MayaVC: no file recorded for tag {tag}")
         return False
