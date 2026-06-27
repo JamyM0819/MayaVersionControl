@@ -6,6 +6,7 @@ Simple QWidget with Qt.Window flag, parented to Maya main window.
 import os
 import re
 import subprocess
+import datetime
 import textwrap as _textwrap
 
 from PySide6.QtWidgets import (
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QLabel, QAbstractItemView,
     QToolButton, QMenu, QLineEdit, QWidgetAction, QFileDialog,
+    QDialog, QTextEdit, QStyledItemDelegate,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
@@ -379,6 +381,15 @@ def show():
     # We handle all sorting manually — Qt sorting stays OFF
     table.setSortingEnabled(False)
 
+    # Custom delegate: paint 10px green bar for current version row
+    class GreenBarDelegate(QStyledItemDelegate):
+        def paint(self, painter, option, index):
+            super().paint(painter, option, index)
+            if index.column() == 0 and index.data(Qt.UserRole + 1):
+                painter.fillRect(option.rect.x(), option.rect.y(),
+                                 10, option.rect.height(), QColor("#27AE60"))
+    table.setItemDelegate(GreenBarDelegate(table))
+
     # Two group colours that alternate per-base-name when rows are sorted by
     # Version (i.e. grouped by base name).  Cleared on Date / Message sort.
     _GROUP_COLOURS = [
@@ -572,8 +583,6 @@ def show():
         table.setRowCount(len(visible))
         for i, r in enumerate(visible):
             is_current = cur_tag and r.tag == cur_tag
-            if is_current:
-                cur_row = i
 
             display_name = os.path.splitext(r.file)[0] if r.file else (r.tag or "-")
             # Split into name + version: "球体布尔_v003" → ("球体布尔", "v003")
@@ -586,6 +595,8 @@ def show():
             tag_item = QTableWidgetItem(name_part)
             tag_item.setData(Qt.UserRole, r.tag)  # real tag for lookups
             tag_item.setTextAlignment(Qt.AlignCenter)
+            if is_current:
+                tag_item.setData(Qt.UserRole + 1, True)  # green bar marker
             table.setItem(i, 0, tag_item)
 
             ver_item = QTableWidgetItem(ver_part)
@@ -605,10 +616,10 @@ def show():
 
             # Highlight current version row
             if is_current:
-                for col in range(4):
-                    cell = table.item(i, col)
-                    cell.setBackground(QColor("#27AE60"))
-                    cell.setForeground(QColor("#FFFFFF"))
+                # Subtle green tint on Name column only
+                name_cell = table.item(i, 0)
+                name_cell.setBackground(QColor("#2d6a4f"))
+                name_cell.setForeground(QColor("#a3e635"))
 
             # Expand row height for expanded (▲) messages
             if "\n" in folded:
@@ -747,8 +758,6 @@ def show():
 
             for i in range(row_count):
                 tag = _tag_for_row(i)
-                if cur_tag and tag == cur_tag:
-                    continue
                 name_item = table.item(i, 0)
                 base = name_item.text() if name_item else ""
                 c = _GROUP_COLOURS[base_order.get(base, 0) % len(_GROUP_COLOURS)]
@@ -760,8 +769,6 @@ def show():
             # Date (1) or Message (2) sort — clear all non-current backgrounds
             for i in range(row_count):
                 tag = _tag_for_row(i)
-                if cur_tag and tag == cur_tag:
-                    continue
                 for col in range(4):
                     cell = table.item(i, col)
                     if cell:
@@ -784,8 +791,9 @@ def show():
             full_msg = r.message or ""
             new_text = _collapsed_for_tag(r.tag, full_msg, wrap_chars=w)
             item = table.item(i, 3)
-            if item and item.text() != new_text:
-                item.setText(new_text)
+            if item:
+                if item.text() != new_text:
+                    item.setText(new_text)
                 table.resizeRowToContents(i)
 
     def _on_msg_col_resized(col, old_w, new_w):
@@ -794,6 +802,12 @@ def show():
 
     def _on_section_clicked(section):
         """Handle all column clicks when Qt sorting is disabled."""
+        # Save selected tag before sorting
+        sel_tag = None
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if rows:
+            sel_tag = _tag_for_row(min(rows))
+
         if section == 1:
             # Pre-scan Name order for Version sort
             state["_pre_click_names"] = []
@@ -807,6 +821,14 @@ def show():
         order = Qt.DescendingOrder if state[dir_key] else Qt.AscendingOrder
         # Trigger the sort
         _on_sort_changed(section, order)
+
+        # Restore selection + scroll to it
+        if sel_tag:
+            for i in range(table.rowCount()):
+                if _tag_for_row(i) == sel_tag:
+                    table.selectRow(i)
+                    table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
+                    break
 
     def _on_sort_changed(section, order):
         """Version (1) = apply pre-scanned Name order sort.
@@ -1136,6 +1158,125 @@ def show():
         cmds.warning(f"MayaVC: renamed {r.file} → {new_name}")
         do_refresh()
 
+    def on_edit_desc():
+        """Edit the description of the selected version."""
+        import maya.cmds as cmds
+
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if not rows:
+            return
+        row = min(rows)
+        tag = _tag_for_row(row)
+        if not tag:
+            return
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
+
+        # Show full text including timestamps (read-only visually, but editable)
+        # On save, timestamps are preserved from original positions
+        ts_re = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*')
+        old_messages = (r.message or "").split("\n")
+
+        dlg = QDialog(win)
+        dlg.setWindowTitle(f"Edit Description — {tag}")
+        dlg.setMinimumSize(650, 400)
+        dlg.resize(750, 500)
+        dlg.setModal(True)
+        dl = QVBoxLayout(dlg)
+
+        # Use a table: Timestamp (read-only) | Body (editable)
+        tbl = QTableWidget(0, 2)
+        tbl.setHorizontalHeaderLabels(["Time", "Description"])
+        tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        tbl.setColumnWidth(0, 150)
+        tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        tbl.setWordWrap(True)
+        tbl.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.AnyKeyPressed)
+
+        # Use multi-line text editor for Description column
+        class MultiLineDelegate(QStyledItemDelegate):
+            def createEditor(self, parent, option, index):
+                te = QTextEdit(parent)
+                te.setAcceptRichText(False)
+                return te
+            def setEditorData(self, editor, index):
+                editor.setPlainText(index.data(Qt.DisplayRole) or "")
+            def setModelData(self, editor, model, index):
+                model.setData(index, editor.toPlainText())
+        tbl.setItemDelegateForColumn(1, MultiLineDelegate(tbl))
+
+        for msg in old_messages:
+            m = ts_re.match(msg)
+            ts = m.group(0) if m else ""
+            body = msg[m.end():] if m else msg
+
+            tbl.insertRow(tbl.rowCount())
+            ts_item = QTableWidgetItem(ts.strip())
+            ts_item.setFlags(ts_item.flags() & ~Qt.ItemIsEditable)
+            ts_item.setForeground(QColor("#999"))
+            tbl.setItem(tbl.rowCount() - 1, 0, ts_item)
+
+            body_item = QTableWidgetItem(body.strip())
+            tbl.setItem(tbl.rowCount() - 1, 1, body_item)
+
+        # Empty row for new entry
+        tbl.insertRow(tbl.rowCount())
+        ts_item = QTableWidgetItem(datetime.datetime.now().strftime("[%Y-%m-%d %H:%M]"))
+        ts_item.setFlags(ts_item.flags() & ~Qt.ItemIsEditable)
+        ts_item.setForeground(QColor("#999"))
+        tbl.setItem(tbl.rowCount() - 1, 0, ts_item)
+        tbl.setItem(tbl.rowCount() - 1, 1, QTableWidgetItem(""))
+
+        dl.addWidget(tbl)
+
+        # Auto-size rows for long text
+        for i in range(tbl.rowCount()):
+            tbl.resizeRowToContents(i)
+            tbl.setRowHeight(i, max(tbl.rowHeight(i), 60))
+
+        br = QHBoxLayout()
+        br.addStretch()
+        sb = QPushButton("Save")
+        sb.setDefault(True)
+        sb.clicked.connect(dlg.accept)
+        br.addWidget(sb)
+        cb = QPushButton("Cancel")
+        cb.clicked.connect(dlg.reject)
+        br.addWidget(cb)
+        dl.addLayout(br)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        # Collect messages from table
+        new_messages = []
+        for i in range(tbl.rowCount()):
+            ts = tbl.item(i, 0).text().strip() if tbl.item(i, 0) else ""
+            body = tbl.item(i, 1).text().strip() if tbl.item(i, 1) else ""
+            if body:
+                new_messages.append(f"{ts} {body}")
+
+        if new_messages == [m.strip() for m in old_messages if m.strip()]:
+            return
+
+        # Update JSON
+        sd = state["scenes_dir"]
+        from core.vc_engine import _acquire_and_read, _write_versions_atomic, _unlock_file
+        lock, data = _acquire_and_read(sd)
+        if lock is not None:
+            try:
+                if tag in data:
+                    data[tag]["messages"] = new_messages
+                    _write_versions_atomic(sd, data)
+            finally:
+                _unlock_file(lock)
+
+        cmds.warning(f"MayaVC: description updated for {tag}")
+        do_refresh()
+
     def on_delete():
         rows = {idx.row() for idx in table.selectedIndexes()}
         if not rows:
@@ -1285,6 +1426,7 @@ def show():
         menu = QMenu(table)
         menu.addAction("Open", on_load)
         menu.addAction("Rename", on_rename)
+        menu.addAction("Edit Description", on_edit_desc)
         menu.addSeparator()
         menu.addAction("Show in Folder", on_folder)
         menu.exec_(table.viewport().mapToGlobal(pos))

@@ -67,6 +67,8 @@ class CommitDialog(QDialog):
         self.text_edit.setMaximumHeight(80)
         layout.addWidget(self.text_edit)
 
+        self.text_edit.setFocus()
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
