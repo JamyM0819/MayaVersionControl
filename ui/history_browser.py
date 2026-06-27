@@ -19,7 +19,7 @@ from PySide6.QtGui import QColor
 from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
-                              _parse_ver, get_plugin_repo_hash, vc_amend_commit,
+                              _parse_ver, vc_amend_commit,
                               dry_run_next_version, vc_commit)
 from core.perf_monitor import show_perf_panel
 from ui.commit_dialog import show_commit_dialog, show_amend_dialog
@@ -187,15 +187,10 @@ def show():
             d = os.getcwd()
     show._last_scenes_dir = d
 
-    # Repo hash for title — use plugin's own hash, not Maya project's
-    repo_hash = get_plugin_repo_hash() or ""
-    if repo_hash:
-        repo_hash = f"  [{repo_hash}]"
-
     # ---- window ----
     win = QWidget(mw, Qt.Window)
     win.setObjectName("MayaVCHistoryWidget")
-    win.setWindowTitle(f"Maya Version History{repo_hash}")
+    win.setWindowTitle("MayaVersionControl")
 
     # Restore previous geometry if available
     geo = _load_geometry()
@@ -249,11 +244,17 @@ def show():
         current_dir = state.get("scenes_dir", "")
         items = []
         if current_dir and os.path.isdir(current_dir):
-            items.append((os.path.basename(current_dir) or current_dir, current_dir))
+            name = os.path.basename(current_dir)
+            if name.lower() == "scenes":
+                name = os.path.basename(os.path.dirname(current_dir)) or name
+            items.append((name, current_dir))
         for p in recent:
             p = os.path.normpath(p)
             if p and os.path.isdir(p) and p != current_dir:
-                items.append((os.path.basename(p) or p, p))
+                name = os.path.basename(p)
+                if name.lower() == "scenes":
+                    name = os.path.basename(os.path.dirname(p)) or name
+                items.append((name, p))
         items = list(dict.fromkeys(items))
 
         def _filter_menu(text):
@@ -293,7 +294,12 @@ def show():
     def _update_project_button_text():
         d = state.get("scenes_dir", "")
         if d and os.path.isdir(d):
-            set_project_btn.setText(os.path.basename(d) or d)
+            # If path ends with /scenes, show parent folder name (the project)
+            name = os.path.basename(d) or d
+            if name.lower() == "scenes":
+                parent = os.path.dirname(d)
+                name = os.path.basename(parent) or name
+            set_project_btn.setText(name)
             set_project_btn.setToolTip(d)
         else:
             set_project_btn.setText("(none)")
@@ -407,6 +413,23 @@ def show():
     help_btn.setToolTip("Tools")
     blay.addWidget(help_btn)
     lay.addLayout(blay)
+
+    # Footer: version + author + GitHub link
+    footer = QHBoxLayout()
+    ver_label = QLabel("v1.0.0")
+    ver_label.setStyleSheet("font-size: 10px; color: #999;")
+    footer.addWidget(ver_label)
+    footer.addStretch()
+    author_label = QLabel("by JamyM")
+    author_label.setStyleSheet("font-size: 10px; color: #999;")
+    footer.addWidget(author_label)
+    github_link = QLabel('<a href="https://github.com/JamyM0819/MayaVersionControl" style="color:#999;">查看更多</a>')
+    github_link.setStyleSheet("font-size: 10px;")
+    github_link.setTextFormat(Qt.RichText)
+    github_link.setOpenExternalLinks(True)
+    footer.addWidget(github_link)
+    lay.addLayout(footer)
+
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
              "latest_only": False, "edit_mode": False, "cur_tag": None}
 
@@ -605,7 +628,7 @@ def show():
     def _msg_col_chars():
         """Return chars that fit in the Message column at current width."""
         fm = table.fontMetrics()
-        col_w = table.columnWidth(2)
+        col_w = table.columnWidth(3)
         # Use widest CJK char width — Chinese chars are ~2x as wide as Latin
         cjk_w = fm.horizontalAdvance("█")
         if cjk_w <= 0:
