@@ -864,14 +864,13 @@ def show():
         return item.data(Qt.UserRole) or item.text()
 
     def _scroll_to_current():
-        """Scroll to and select the current version row, if visible."""
+        """Scroll to the current version row without selecting it."""
         cur_tag = state.get("cur_tag")
         if not cur_tag:
             return
         row_count = table.rowCount()
         for i in range(row_count):
             if _tag_for_row(i) == cur_tag:
-                table.selectRow(i)
                 table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
                 break
 
@@ -903,6 +902,12 @@ def show():
 
     table.itemClicked.connect(on_msg_click)
     table.itemDoubleClicked.connect(lambda item: on_load())
+
+    # Click on empty area → clear selection
+    def on_table_clicked(index):
+        if not index.isValid():
+            table.clearSelection()
+    table.clicked.connect(on_table_clicked)
 
     def on_sel():
         if state["edit_mode"]:
