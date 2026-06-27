@@ -213,19 +213,24 @@ def show():
 
     top_bar = QHBoxLayout()
 
-    # ---- Set Project (Maya-style: label + dropdown + folder icon) ----
-    proj_wrapper = QVBoxLayout()
-    proj_wrapper.setSpacing(1)
-    proj_label = QLabel("Set Project")
-    proj_label.setStyleSheet("font-size: 10px; color: #999; padding-left: 2px;")
-    proj_wrapper.addWidget(proj_label)
-
-    set_project_btn = QToolButton()
-    set_project_btn.setPopupMode(QToolButton.MenuButtonPopup)
-    set_project_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
-    set_project_btn.setMinimumWidth(160)
+    # ---- Set Project (button + dropdown + folder icon) ----
+    proj_row = QHBoxLayout()
+    set_project_btn = QPushButton("(none)")
+    set_project_btn.setMinimumWidth(140)
+    set_project_btn.setStyleSheet("text-align: left; padding-left: 8px;")
     set_project_menu = QMenu(set_project_btn)
     set_project_btn.setMenu(set_project_menu)
+
+    # Folder icon button to the right of the project button
+    folder_btn = QPushButton("📂")
+    folder_btn.setToolTip("Browse for project folder")
+    folder_btn.setFixedWidth(32)
+    folder_btn.setStyleSheet("font-size: 16px;")
+
+    proj_row.addWidget(set_project_btn)
+    proj_row.addWidget(folder_btn)
+    top_bar.addLayout(proj_row)
+    top_bar.addSpacing(8)
 
     # Build the popup menu (rebuilt each time it's about to show)
     def _build_project_menu():
@@ -242,7 +247,6 @@ def show():
         # -- Recent projects section --
         recent = _load_recent_projects()
         current_dir = state.get("scenes_dir", "")
-        # Build list of (label, path) — current path always first
         items = []
         if current_dir and os.path.isdir(current_dir):
             items.append((os.path.basename(current_dir) or current_dir, current_dir))
@@ -250,9 +254,8 @@ def show():
             p = os.path.normpath(p)
             if p and os.path.isdir(p) and p != current_dir:
                 items.append((os.path.basename(p) or p, p))
-        items = list(dict.fromkeys(items))  # dedup keeping order
+        items = list(dict.fromkeys(items))
 
-        # Filter box narrows the menu items
         def _filter_menu(text):
             filt = text.lower()
             for action in set_project_menu.actions():
@@ -282,9 +285,6 @@ def show():
 
         set_project_menu.addSeparator()
 
-        # -- Bottom actions --
-        browse_a = set_project_menu.addAction("📂  Browse...")
-        browse_a.triggered.connect(_on_browse_project)
         snap_a = set_project_menu.addAction("📍  Use Current Maya Project")
         snap_a.triggered.connect(_on_use_current_maya_project)
 
@@ -332,12 +332,6 @@ def show():
         except Exception as e:
             cmds.warning(f"MayaVC: {e}")
 
-    proj_wrapper.addWidget(set_project_btn)
-    top_bar.addLayout(proj_wrapper)
-    top_bar.addSpacing(8)
-
-    label = QLabel("Project: (click Refresh)")
-    top_bar.addWidget(label, stretch=1)
     collapse_all_btn = QPushButton("全部收起")
     top_bar.addWidget(collapse_all_btn)
     latest_only_btn = QPushButton("只看最新")
@@ -346,11 +340,16 @@ def show():
     top_bar.addWidget(filter_toggle_btn)
     lay.addLayout(top_bar)
 
+    # Info row: project name + version count + current version
+    info_bar = QHBoxLayout()
+    label = QLabel("")
+    info_bar.addWidget(label, stretch=1)
     info_label = QLabel("")
     info_label.setStyleSheet("font-size: 12px; font-weight: bold;")
     info_label.setTextFormat(Qt.RichText)
     info_label.setCursor(Qt.PointingHandCursor)
-    lay.addWidget(info_label)
+    info_bar.addWidget(info_label)
+    lay.addLayout(info_bar)
 
     table = QTableWidget(0, 4)
     table.setHorizontalHeaderLabels(["Name", "Version", "Date", "Message"])
@@ -1267,6 +1266,9 @@ def show():
     help_menu.addAction("Performance", on_perf)
     help_btn.setMenu(help_menu)
     help_btn.setPopupMode(QToolButton.InstantPopup)
+
+    # Connect folder button now that _on_browse_project is defined
+    folder_btn.clicked.connect(_on_browse_project)
 
     do_refresh()
 
