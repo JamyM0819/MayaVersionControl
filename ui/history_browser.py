@@ -866,6 +866,8 @@ def show():
             table.horizontalHeader().setSortIndicator(section, order)
             # Save current order for restoration after do_refresh
             state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
+            # Fix row heights after reorder
+            QTimer.singleShot(0, _rewrap_all_messages)
         visible = state.get("visible")
         cur_tag = state.get("cur_tag")
         if visible:
