@@ -5,6 +5,7 @@ Simple QWidget with Qt.Window flag, parented to Maya main window.
 
 import os
 import re
+import subprocess
 import textwrap as _textwrap
 
 from PySide6.QtWidgets import (
@@ -374,10 +375,6 @@ def show():
     blay.addWidget(save_commit_btn)
     blay.addStretch()
     # right group: tools
-    clear_cache_btn = QPushButton("Clear Cache")
-    blay.addWidget(clear_cache_btn)
-    perf_btn = QPushButton("Perf")
-    blay.addWidget(perf_btn)
     delete_btn = QPushButton("Delete This Version")
     delete_btn.setEnabled(False)
     blay.addWidget(delete_btn)
@@ -388,14 +385,14 @@ def show():
     delete_selected_btn.setVisible(False)
     blay.addWidget(delete_selected_btn)
     blay.addStretch()
-    load_btn = QPushButton("Load This Version")
-    load_btn.setEnabled(False)
-    blay.addWidget(load_btn)
-    folder_btn = QPushButton("Show in Folder")
-    folder_btn.setEnabled(False)
-    blay.addWidget(folder_btn)
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
+    # "?" help button — replaces Clear Cache + Perf
+    help_btn = QToolButton()
+    help_btn.setText("?")
+    help_btn.setFixedWidth(28)
+    help_btn.setToolTip("Tools")
+    blay.addWidget(help_btn)
     lay.addLayout(blay)
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
              "latest_only": False, "edit_mode": False, "cur_tag": None}
@@ -510,7 +507,8 @@ def show():
             if is_current:
                 cur_row = i
 
-            tag_item = QTableWidgetItem(r.file or r.tag or "-")
+            display_name = os.path.splitext(r.file)[0] if r.file else (r.tag or "-")
+            tag_item = QTableWidgetItem(display_name)
             tag_item.setData(Qt.UserRole, r.tag)  # real tag for lookups
             tag_item.setTextAlignment(Qt.AlignCenter)
             table.setItem(i, 0, tag_item)
@@ -792,8 +790,6 @@ def show():
         else:
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < table.rowCount()
-            load_btn.setEnabled(en)
-            folder_btn.setEnabled(en)
             delete_btn.setEnabled(en)
 
     def on_edit():
@@ -802,8 +798,6 @@ def show():
             edit_btn.setText("Edit")
             edit_btn.setStyleSheet("")
             delete_selected_btn.setVisible(False)
-            load_btn.setVisible(True)
-            folder_btn.setVisible(True)
             delete_btn.setVisible(True)
             table.setSelectionMode(QAbstractItemView.SingleSelection)
             state["edit_mode"] = False
@@ -812,8 +806,6 @@ def show():
             edit_btn.setText("Done")
             edit_btn.setStyleSheet("background-color: #e74c3c; color: #fff; font-weight: bold;")
             delete_selected_btn.setVisible(True)
-            load_btn.setVisible(False)
-            folder_btn.setVisible(False)
             delete_btn.setVisible(False)
             table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             state["edit_mode"] = True
@@ -909,9 +901,88 @@ def show():
             do_refresh()
 
     def on_folder():
+        """Open the scenes folder and select the file in Explorer."""
         sd = state["scenes_dir"]
-        if sd and os.path.isdir(sd):
-            os.startfile(sd)
+        if not sd or not os.path.isdir(sd):
+            return
+        # Try to select the current row's file
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if rows:
+            row = min(rows)
+            tag = _tag_for_row(row)
+            r = state.get("tag_map", {}).get(tag)
+            if r and r.file:
+                fpath = os.path.join(sd, r.file)
+                if os.path.isfile(fpath):
+                    # Windows: explorer /select, highlights the file
+                    subprocess.run(["explorer", "/select,", os.path.normpath(fpath)])
+                    return
+        os.startfile(sd)
+
+    def on_rename():
+        """Rename the selected version's file on disk + update JSON."""
+        import maya.cmds as cmds
+
+        rows = {idx.row() for idx in table.selectedIndexes()}
+        if not rows:
+            return
+        row = min(rows)
+        tag = _tag_for_row(row)
+        if not tag:
+            return
+        r = state.get("tag_map", {}).get(tag)
+        if not r:
+            return
+        sd = state["scenes_dir"]
+        old_path = os.path.join(sd, r.file)
+        if not os.path.isfile(old_path):
+            cmds.warning(f"MayaVC: file not found — {r.file}")
+            return
+
+        # Prompt for new name (strip extension so user only edits the base)
+        old_base, old_ext = os.path.splitext(r.file)
+        result = cmds.promptDialog(
+            title="Rename Version File",
+            message=f"New name for {tag}:",
+            text=old_base,
+            button=["Rename", "Cancel"],
+            defaultButton="Rename",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if result == "Cancel":
+            return
+        new_name = (cmds.promptDialog(q=True, text=True) or "").strip()
+        if not new_name or new_name == old_base:
+            return
+
+        # Append original extension
+        new_name = new_name + old_ext
+
+        new_path = os.path.join(sd, new_name)
+        if os.path.exists(new_path):
+            cmds.warning(f"MayaVC: {new_name} already exists — rename cancelled")
+            return
+
+        try:
+            os.rename(old_path, new_path)
+        except Exception as e:
+            cmds.warning(f"MayaVC: rename failed - {e}")
+            return
+
+        # Update JSON
+        from core.vc_engine import _read_versions, _acquire_and_read, _write_versions_atomic, _unlock_file
+        lock, data = _acquire_and_read(sd)
+        if lock is not None:
+            try:
+                if tag in data:
+                    data[tag]["file"] = new_name
+                    _write_versions_atomic(sd, data)
+            finally:
+                _unlock_file(lock)
+
+        cmds.warning(f"MayaVC: renamed {r.file} → {new_name}")
+        do_refresh()
 
     def on_delete():
         rows = {idx.row() for idx in table.selectedIndexes()}
@@ -1042,13 +1113,32 @@ def show():
     hdr.sectionResized.connect(_on_msg_col_resized)
     hdr.sortIndicatorChanged.connect(_on_sort_changed)
     table.itemSelectionChanged.connect(on_sel)
-    load_btn.clicked.connect(on_load)
-    folder_btn.clicked.connect(on_folder)
     delete_btn.clicked.connect(on_delete)
     save_commit_btn.clicked.connect(on_save_commit)
     inc_save_btn.clicked.connect(on_inc_save)
-    clear_cache_btn.clicked.connect(on_clear_cache)
-    perf_btn.clicked.connect(on_perf)
+
+    # ---- right-click context menu on table ----
+    table.setContextMenuPolicy(Qt.CustomContextMenu)
+    def on_context_menu(pos):
+        row = table.rowAt(pos.y())
+        if row < 0 or row >= table.rowCount():
+            return
+        # Select the row under cursor
+        table.selectRow(row)
+        menu = QMenu(table)
+        menu.addAction("Open", on_load)
+        menu.addAction("Rename", on_rename)
+        menu.addSeparator()
+        menu.addAction("Show in Folder", on_folder)
+        menu.exec_(table.viewport().mapToGlobal(pos))
+    table.customContextMenuRequested.connect(on_context_menu)
+
+    # ---- "?" help button menu (Clear Cache + Perf) ----
+    help_menu = QMenu(help_btn)
+    help_menu.addAction("Clear Cache", on_clear_cache)
+    help_menu.addAction("Performance", on_perf)
+    help_btn.setMenu(help_menu)
+    help_btn.setPopupMode(QToolButton.InstantPopup)
 
     do_refresh()
 
