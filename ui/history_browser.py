@@ -885,6 +885,14 @@ def show():
                     table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
                     break
 
+    def _update_sort_header(section, order):
+        """Add ▲/▼ to the sorted column's header label."""
+        base = ["Name", "Version", "Date", "Message"]
+        labels = list(base)
+        arrow = " ▲" if order == Qt.AscendingOrder else " ▼"
+        labels[section] = base[section] + arrow
+        table.setHorizontalHeaderLabels(labels)
+
     def _on_sort_changed(section, order):
         """Version (1) = apply pre-scanned Name order sort.
         Other columns use Qt default."""
@@ -915,6 +923,7 @@ def show():
                 do_refresh(latest_only=state["latest_only"])
                 state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
                 table.horizontalHeader().setSortIndicator(1, order)
+                _update_sort_header(1, order)
             finally:
                 _on_sort_changed._busy = False
             vis = state.get("visible", [])
@@ -940,6 +949,7 @@ def show():
                     if item is not None:
                         table.setItem(tgt, c, item)
             table.horizontalHeader().setSortIndicator(section, order)
+            _update_sort_header(section, order)
             # Save current order for restoration after do_refresh
             state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
             # Fix row heights after reorder
