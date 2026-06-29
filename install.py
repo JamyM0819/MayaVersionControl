@@ -8,6 +8,11 @@ Or run in Script Editor:
 
 import os, sys
 
+# NOTE: If you see "does not contain drop function: onMayaDroppedPythonFile",
+# Maya cached the old install module.  Clear it first in Script Editor:
+#     import sys; sys.modules.pop('install', None)
+# Then re-run, or use the exec() form below which bypasses caching.
+
 # ── Detect plugin folder ──
 _PACKAGE_DIR = None
 

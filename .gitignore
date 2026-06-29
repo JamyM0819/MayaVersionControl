@@ -20,7 +20,7 @@ cache/
 
 # Log files
 *.log
-
+*.txt
 # Temporary files
 *.tmp
 *.temp

@@ -970,7 +970,9 @@ def show():
         if not r:
             return
         full_msg = r.message or ""
-        if "\n" not in full_msg:
+        # Allow expansion for multi-commit messages (\x1e) even when no
+        # embedded newlines exist.  The expanded display adds \n at render time.
+        if "\n" not in full_msg and "\x1e" not in full_msg:
             return
 
         # Toggle
@@ -1469,15 +1471,19 @@ def show():
     def on_collapse_all():
         """Toggle collapse/expand all multi-commit messages."""
         visible = state.get("visible", [])
-        # Check if any multi-commit message is currently collapsed
+        # A message is expandable if it has embedded newlines (multi-line
+        # body) or \x1e record separators (amends / multiple commits).
+        def _is_expandable(msg):
+            return "\n" in msg or "\x1e" in msg
+
         any_collapsed = any(
-            "\n" in (r.message or "") and _COLLAPSED_STATE.get(r.tag, True)
+            _is_expandable(r.message or "") and _COLLAPSED_STATE.get(r.tag, True)
             for r in visible
         )
         new_state = not any_collapsed
         for r in visible:
             full_msg = r.message or ""
-            if "\n" in full_msg:
+            if _is_expandable(full_msg):
                 _COLLAPSED_STATE[r.tag] = new_state
         _save_collapsed()
         collapse_all_btn.setText("全部展开" if new_state else "全部收起")
