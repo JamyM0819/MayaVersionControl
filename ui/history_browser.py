@@ -23,7 +23,8 @@ from shiboken6 import isValid as _isValid
 
 from core.vc_engine import (get_scenes_dir, get_history, load_version, delete_version,
                               _parse_ver, get_plugin_repo_hash, vc_amend_commit,
-                              dry_run_next_version, vc_commit)
+                              dry_run_next_version, vc_commit,
+                              _acquire_and_read, _write_versions_atomic, _unlock_file)
 from core.perf_monitor import show_perf_panel
 from ui.commit_dialog import show_commit_dialog, show_amend_dialog
 
@@ -368,7 +369,7 @@ def show():
     table.verticalHeader().setVisible(False)
     hdr = table.horizontalHeader()
     hdr.setSectionResizeMode(0, QHeaderView.Interactive)
-    hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+    hdr.setSectionResizeMode(1, QHeaderView.Interactive)
     hdr.setSectionResizeMode(2, QHeaderView.Interactive)
     hdr.setSectionResizeMode(3, QHeaderView.Stretch)
     table.setColumnWidth(0, 130)
@@ -378,7 +379,10 @@ def show():
     table.setWordWrap(False)
     lay.addWidget(table, stretch=1)
 
-    # We handle all sorting manually — Qt sorting stays OFF
+    # We handle all sorting manually.  Sorting stays OFF so Qt never
+    # auto-sorts during do_refresh.  Sort indicators are set explicitly
+    # via setSortIndicator() after each sort and stay visible as long as
+    # setSortingEnabled(False) is not called again (Qt 5.15+ quirk).
     table.setSortingEnabled(False)
 
     # Custom delegate: paint 10px green bar for current version row
@@ -434,6 +438,9 @@ def show():
     delete_selected_btn = QPushButton("Delete Selected")
     delete_selected_btn.setEnabled(False)
     blay.addWidget(delete_selected_btn)
+    clear_desc_btn = QPushButton("Clear Descriptions")
+    clear_desc_btn.setEnabled(False)
+    blay.addWidget(clear_desc_btn)
     blay.addStretch()
     refresh_btn = QPushButton("Refresh")
     blay.addWidget(refresh_btn)
@@ -504,9 +511,6 @@ def show():
             state["latest_only"] = latest_only
 
         state["records"] = []
-        # Temporarily disable sorting while we rebuild the table — then
-        # re-enable it so Qt applies the current sort indicator on its own.
-        table.setSortingEnabled(False)
         table.setRowCount(0)
         label.setText("Loading...")
         info_label.setText("")
@@ -643,6 +647,12 @@ def show():
             folded = _collapsed_for_tag(r.tag, full_msg)
             msg_item = QTableWidgetItem(folded)
             msg_item.setData(Qt.UserRole, full_msg)
+            # Auto-imported messages shown in gray italic as "pending" state
+            if "(auto-imported)" in full_msg:
+                msg_item.setForeground(QColor("#888888"))
+                f = msg_item.font()
+                f.setItalic(True)
+                msg_item.setFont(f)
             table.setItem(i, 3, msg_item)
 
             # Highlight current version row
@@ -876,9 +886,8 @@ def show():
                 return
             _on_sort_changed._busy = True
             try:
-                state["ver_desc"] = not state.get("ver_desc", True)
                 state["_last_sort_section"] = 1
-                desc = state["ver_desc"]
+                desc = (order == Qt.DescendingOrder)
 
                 # Build name_order from pre-scanned names
                 pre_names = state.pop("_pre_click_names", [])
@@ -898,7 +907,7 @@ def show():
                 state["_sort_records_key"] = _sk
                 do_refresh(latest_only=state["latest_only"])
                 state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
-                table.horizontalHeader().setSortIndicator(0, Qt.AscendingOrder)
+                table.horizontalHeader().setSortIndicator(1, order)
             finally:
                 _on_sort_changed._busy = False
             vis = state.get("visible", [])
@@ -1001,6 +1010,7 @@ def show():
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < table.rowCount()
             delete_selected_btn.setEnabled(en)
+            clear_desc_btn.setEnabled(en)
         else:
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < table.rowCount()
@@ -1012,6 +1022,7 @@ def show():
             edit_btn.setText("Edit")
             edit_btn.setStyleSheet("")
             delete_selected_btn.setEnabled(False)
+            clear_desc_btn.setEnabled(False)
             delete_btn.setEnabled(True)
             table.setSelectionMode(QAbstractItemView.SingleSelection)
             state["edit_mode"] = False
@@ -1020,6 +1031,7 @@ def show():
             edit_btn.setText("Done")
             edit_btn.setStyleSheet("background-color: #e74c3c; color: #fff; font-weight: bold;")
             delete_selected_btn.setEnabled(True)
+            clear_desc_btn.setEnabled(True)
             delete_btn.setEnabled(False)
             table.setSelectionMode(QAbstractItemView.ExtendedSelection)
             state["edit_mode"] = True
@@ -1074,6 +1086,52 @@ def show():
         # Auto-exit edit mode after delete
         if state.get("edit_mode"):
             on_edit()
+
+    def on_clear_descriptions():
+        """Clear descriptions for all selected versions."""
+        rows = sorted({idx.row() for idx in table.selectedIndexes()})
+        if not rows:
+            return
+        tag_map = state.get("tag_map", {})
+        selected = []
+        for i in rows:
+            tag = _tag_for_row(i)
+            if tag:
+                r = tag_map.get(tag)
+                if r:
+                    selected.append(r)
+        if not selected:
+            return
+
+        import maya.cmds as cmds
+        count = len(selected)
+        tag_list = "\n".join(f"  {r.tag}  ({r.date})" for r in selected)
+        result = cmds.confirmDialog(
+            title="Clear Descriptions",
+            message=f"Clear descriptions for {count} versions?\n\n{tag_list}\n\nFiles will NOT be deleted.",
+            button=["Clear", "Cancel"],
+            defaultButton="Cancel",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if result != "Clear":
+            return
+
+        d = state["scenes_dir"]
+        lock, data = _acquire_and_read(d)
+        try:
+            cleared = 0
+            for r in selected:
+                tag = r.tag
+                if tag in data:
+                    data[tag]["messages"] = []
+                    cleared += 1
+            if cleared:
+                _write_versions_atomic(d, lock, data)
+                cmds.warning(f"MayaVC: cleared descriptions for {cleared} versions")
+        finally:
+            _unlock_file(lock)
+        do_refresh()
 
     def on_save_commit():
         """Save current Maya scene and append a commit to the current version tag."""
@@ -1492,6 +1550,7 @@ def show():
     refresh_btn.clicked.connect(do_refresh)
     edit_btn.clicked.connect(on_edit)
     delete_selected_btn.clicked.connect(on_delete_selected)
+    clear_desc_btn.clicked.connect(on_clear_descriptions)
     collapse_all_btn.clicked.connect(on_collapse_all)
     filter_toggle_btn.clicked.connect(on_toggle)
     latest_only_btn.clicked.connect(on_latest_only)

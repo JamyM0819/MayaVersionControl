@@ -413,6 +413,9 @@ def vc_amend_commit(scenes_dir, file_path, version, append_message):
                 "messages": [append_line],
             }
         else:
+            # Replace auto-imported placeholder with real messages
+            entry["messages"] = [m for m in entry["messages"]
+                                 if "(auto-imported)" not in m]
             entry["messages"].append(append_line)
             entry["file"] = fname
             entry["time"] = now_str
