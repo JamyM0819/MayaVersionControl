@@ -337,11 +337,11 @@ def show():
 
     collapse_all_btn = QPushButton("全部展开")
     top_bar.addWidget(collapse_all_btn)
-    latest_only_btn = QPushButton("历史版本")
+    latest_only_btn = QPushButton("全部 | 最新")
     latest_only_btn.setCheckable(True)
     latest_only_btn.setStyleSheet("QPushButton:checked { background-color: #2980b9; color: #fff; }")
     top_bar.addWidget(latest_only_btn)
-    filter_toggle_btn = QPushButton("全部显示")
+    filter_toggle_btn = QPushButton("全部 | 当前")
     filter_toggle_btn.setCheckable(True)
     filter_toggle_btn.setStyleSheet("QPushButton:checked { background-color: #2980b9; color: #fff; }")
     top_bar.addWidget(filter_toggle_btn)
@@ -1521,21 +1521,17 @@ def show():
 
     def on_toggle():
         if state["filter_mode"] == "all":
-            filter_toggle_btn.setText("只看当前")
             filter_toggle_btn.setChecked(True)
             do_refresh(filter_mode="current")
         else:
-            filter_toggle_btn.setText("全部显示")
             filter_toggle_btn.setChecked(False)
             do_refresh(filter_mode="all")
 
     def on_latest_only():
         if state["latest_only"]:
-            latest_only_btn.setText("历史版本")
             latest_only_btn.setChecked(False)
             do_refresh(latest_only=False)
         else:
-            latest_only_btn.setText("只看最新")
             latest_only_btn.setChecked(True)
             do_refresh(latest_only=True)
 
