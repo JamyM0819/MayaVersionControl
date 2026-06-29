@@ -100,3 +100,9 @@ print(f"\n{'='*60}")
 print("  MayaVC installed successfully!")
 print(f"  Folder: {_PACKAGE_DIR}")
 print(f"{'='*60}\n")
+
+
+def onMayaDroppedPythonFile(path):
+    """Called by Maya's executeDroppedPythonFile after import.
+    All work already done at module level; nothing extra needed."""
+    pass
