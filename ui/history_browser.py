@@ -455,7 +455,7 @@ def show():
     # Footer: version + author + GitHub link
     footer = QHBoxLayout()
     h = get_plugin_repo_hash() or ""
-    ver_text = f"v1.0.3"
+    ver_text = f"v1.0.4"
     if h:
         ver_text += f"  [{h[:7]}]"
     ver_label = QLabel(ver_text)
