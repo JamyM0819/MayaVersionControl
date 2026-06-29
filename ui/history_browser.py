@@ -653,6 +653,10 @@ def show():
                 f = msg_item.font()
                 f.setItalic(True)
                 msg_item.setFont(f)
+            # Visual distinction: collapsed expandable messages shown dimmer
+            elif "\n" in full_msg or "\x1e" in full_msg:
+                if _COLLAPSED_STATE.get(r.tag, True):
+                    msg_item.setForeground(QColor("#999999"))
             table.setItem(i, 3, msg_item)
 
             # Highlight current version row
@@ -772,9 +776,12 @@ def show():
         ts, body = _split_ts_body(full_msg)
         if collapsed:
             body_flat = body.replace("\n", " ").strip() if body else ""
+            if "\n" in full_msg:
+                return ("▶ " + ts.rstrip() + " " + body_flat)[:wrap_chars] if ts else ("▶ " + full_msg[:wrap_chars - 2])
             return (ts.rstrip() + " " + body_flat)[:wrap_chars] if ts else full_msg[:wrap_chars]
         else:
-            return (ts.rstrip() + "\n" + body.strip()) if ts else full_msg
+            prefix = "▼ " if "\n" in full_msg else ""
+            return (prefix + ts.rstrip() + "\n" + body.strip()) if ts else full_msg
 
     def _apply_group_colours(visible, cur_tag, sort_section=-1):
         """Paint alternating backgrounds per base-name group when sorted by
@@ -993,6 +1000,12 @@ def show():
         new_text = _collapsed_for_tag(tag, full_msg, wrap_chars=_msg_col_chars())
         msg_item = table.item(item.row(), 3)
         msg_item.setText(new_text)
+        # Update foreground to reflect new collapse state
+        if "(auto-imported)" not in full_msg:
+            if _COLLAPSED_STATE.get(tag, True):
+                msg_item.setForeground(QColor("#999999"))
+            else:
+                msg_item.setForeground(QColor("#ffffff"))
         ri = item.row()
         QTimer.singleShot(20, lambda r=ri: _safe_resize_row(r))
 
