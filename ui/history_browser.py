@@ -335,31 +335,27 @@ def show():
         except Exception as e:
             cmds.warning(f"MayaVC: {e}")
 
-    collapse_all_btn = QPushButton("全部展开")
-    top_bar.addWidget(collapse_all_btn)
-
-    # Segment control: two-button toggle for "全部 | 最新"
+    # Segment: 历史版本 | 只看最新
     seg1 = QWidget()
     seg1_lay = QHBoxLayout(seg1)
     seg1_lay.setContentsMargins(0, 0, 0, 0)
     seg1_lay.setSpacing(0)
-    latest_all_btn = QPushButton("全部")
-    latest_all_btn.setCheckable(False)
-    latest_new_btn = QPushButton("最新")
-    latest_new_btn.setCheckable(False)
+    latest_all_btn = QPushButton("历史版本")
+    latest_new_btn = QPushButton("只看最新")
     seg1_lay.addWidget(latest_all_btn)
     seg1_lay.addWidget(latest_new_btn)
     top_bar.addWidget(seg1)
 
-    # Segment control: two-button toggle for "全部 | 当前"
+    collapse_all_btn = QPushButton("全部展开")
+    top_bar.addWidget(collapse_all_btn)
+
+    # Segment: 全部显示 | 只看当前
     seg2 = QWidget()
     seg2_lay = QHBoxLayout(seg2)
     seg2_lay.setContentsMargins(0, 0, 0, 0)
     seg2_lay.setSpacing(0)
-    filter_all_btn = QPushButton("全部")
-    filter_all_btn.setCheckable(False)
-    filter_cur_btn = QPushButton("当前")
-    filter_cur_btn.setCheckable(False)
+    filter_all_btn = QPushButton("全部显示")
+    filter_cur_btn = QPushButton("只看当前")
     seg2_lay.addWidget(filter_all_btn)
     seg2_lay.addWidget(filter_cur_btn)
     top_bar.addWidget(seg2)
