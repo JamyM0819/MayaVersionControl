@@ -32,7 +32,7 @@ class CommitDialog(QDialog):
 
         title = "Incremental Save" if not repo_hash else f"Incremental Save  [{repo_hash}]"
         self.setWindowTitle(title)
-        self.setMinimumSize(500, 260)
+        self.setMinimumSize(520, 300)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -64,8 +64,7 @@ class CommitDialog(QDialog):
         self.text_edit.setPlaceholderText(
             "e.g. Adjusted skin weights, added IK/FK switch controller"
         )
-        self.text_edit.setMaximumHeight(80)
-        layout.addWidget(self.text_edit)
+        layout.addWidget(self.text_edit, stretch=1)
 
         self.text_edit.setFocus()
 
