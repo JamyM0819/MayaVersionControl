@@ -337,14 +337,39 @@ def show():
 
     collapse_all_btn = QPushButton("全部展开")
     top_bar.addWidget(collapse_all_btn)
-    latest_only_btn = QPushButton("全部 | 最新")
-    latest_only_btn.setCheckable(True)
-    latest_only_btn.setStyleSheet("QPushButton:checked { background-color: #2980b9; color: #fff; }")
-    top_bar.addWidget(latest_only_btn)
-    filter_toggle_btn = QPushButton("全部 | 当前")
-    filter_toggle_btn.setCheckable(True)
-    filter_toggle_btn.setStyleSheet("QPushButton:checked { background-color: #2980b9; color: #fff; }")
-    top_bar.addWidget(filter_toggle_btn)
+
+    # Segment control: two-button toggle for "全部 | 最新"
+    seg1 = QWidget()
+    seg1_lay = QHBoxLayout(seg1)
+    seg1_lay.setContentsMargins(0, 0, 0, 0)
+    seg1_lay.setSpacing(0)
+    latest_all_btn = QPushButton("全部")
+    latest_all_btn.setCheckable(False)
+    latest_new_btn = QPushButton("最新")
+    latest_new_btn.setCheckable(False)
+    seg1_lay.addWidget(latest_all_btn)
+    seg1_lay.addWidget(latest_new_btn)
+    top_bar.addWidget(seg1)
+
+    # Segment control: two-button toggle for "全部 | 当前"
+    seg2 = QWidget()
+    seg2_lay = QHBoxLayout(seg2)
+    seg2_lay.setContentsMargins(0, 0, 0, 0)
+    seg2_lay.setSpacing(0)
+    filter_all_btn = QPushButton("全部")
+    filter_all_btn.setCheckable(False)
+    filter_cur_btn = QPushButton("当前")
+    filter_cur_btn.setCheckable(False)
+    seg2_lay.addWidget(filter_all_btn)
+    seg2_lay.addWidget(filter_cur_btn)
+    top_bar.addWidget(seg2)
+
+    active_style = "QPushButton { background-color: #2980b9; color: #fff; font-weight: bold; }"
+    dim_style = "QPushButton { background-color: #3a3a3a; color: #999; }"
+    latest_all_btn.setStyleSheet(active_style)
+    filter_all_btn.setStyleSheet(active_style)
+    latest_new_btn.setStyleSheet(dim_style)
+    filter_cur_btn.setStyleSheet(dim_style)
     lay.addLayout(top_bar)
 
     # Info row: project name + version count + current version
@@ -1521,18 +1546,22 @@ def show():
 
     def on_toggle():
         if state["filter_mode"] == "all":
-            filter_toggle_btn.setChecked(True)
+            filter_all_btn.setStyleSheet(dim_style)
+            filter_cur_btn.setStyleSheet(active_style)
             do_refresh(filter_mode="current")
         else:
-            filter_toggle_btn.setChecked(False)
+            filter_all_btn.setStyleSheet(active_style)
+            filter_cur_btn.setStyleSheet(dim_style)
             do_refresh(filter_mode="all")
 
     def on_latest_only():
         if state["latest_only"]:
-            latest_only_btn.setChecked(False)
+            latest_all_btn.setStyleSheet(active_style)
+            latest_new_btn.setStyleSheet(dim_style)
             do_refresh(latest_only=False)
         else:
-            latest_only_btn.setChecked(True)
+            latest_all_btn.setStyleSheet(dim_style)
+            latest_new_btn.setStyleSheet(active_style)
             do_refresh(latest_only=True)
 
     def on_collapse_all():
@@ -1561,8 +1590,10 @@ def show():
     delete_selected_btn.clicked.connect(on_delete_selected)
     clear_desc_btn.clicked.connect(on_clear_descriptions)
     collapse_all_btn.clicked.connect(on_collapse_all)
-    filter_toggle_btn.clicked.connect(on_toggle)
-    latest_only_btn.clicked.connect(on_latest_only)
+    filter_all_btn.clicked.connect(on_toggle)
+    filter_cur_btn.clicked.connect(on_toggle)
+    latest_all_btn.clicked.connect(on_latest_only)
+    latest_new_btn.clicked.connect(on_latest_only)
     info_label.linkActivated.connect(lambda: _scroll_to_current())
     hdr.sectionResized.connect(_on_msg_col_resized)
     hdr.sectionClicked.connect(_on_section_clicked)
