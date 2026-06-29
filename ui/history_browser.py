@@ -197,7 +197,7 @@ def show():
     else:
         win.resize(900, 550)
 
-    win.setMinimumSize(600, 350)
+    win.setMinimumSize(1000, 350)
 
     lay = QVBoxLayout(win)
     lay.setContentsMargins(6, 6, 6, 6)
@@ -376,7 +376,7 @@ def show():
     table.setColumnWidth(1, 60)
     table.setColumnWidth(2, 130)
     table.setColumnWidth(3, 280)
-    table.setWordWrap(False)
+    table.setWordWrap(True)
     lay.addWidget(table, stretch=1)
 
     # We handle all sorting manually.  Sorting stays OFF so Qt never
