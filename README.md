@@ -3,6 +3,8 @@
 [![Version](https://img.shields.io/badge/version-v1.0.3-blue)](https://github.com/JamyM0819/MayaVersionControl/releases)
 
 Maya 文件增量保存 + 版本历史管理，零依赖，开箱即用。
+<img width="1002" height="584" alt="image" src="https://github.com/user-attachments/assets/2125b20d-2309-42a7-9c68-992ae013d5e5" />
+
 
 ## 安装
 
