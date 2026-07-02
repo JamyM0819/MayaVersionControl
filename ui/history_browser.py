@@ -174,6 +174,8 @@ def show():
         for w in show._windows[:]:
             try:
                 if _isValid(w) and w.isVisible():
+                    # Save latest geometry before raising (user may have moved the window)
+                    _collect_and_save_from_window(w)
                     w.raise_()
                     w.activateWindow()
                     return
