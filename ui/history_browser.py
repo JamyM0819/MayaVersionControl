@@ -1107,6 +1107,9 @@ def show():
             rows = {idx.row() for idx in table.selectedIndexes()}
             en = bool(rows) and min(rows) < table.rowCount()
             delete_btn.setEnabled(en)
+        # Persist selection on every change
+        if state.get("_initial_load_done"):
+            _collect_and_save_from_window(win)
 
     def on_edit():
         if state["edit_mode"]:
