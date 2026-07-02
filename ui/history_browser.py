@@ -1085,6 +1085,9 @@ def show():
         ri = item.row()
         QTimer.singleShot(20, lambda r=ri: _safe_resize_row(r))
 
+        # Persist collapsed state
+        _collect_and_save_from_window(win)
+
     table.itemClicked.connect(on_msg_click)
     table.itemDoubleClicked.connect(lambda _: None if state.get("edit_mode") else on_load())
 
@@ -1635,6 +1638,7 @@ def show():
         _save_collapsed()
         collapse_all_btn.setText("全部展开" if new_state else "全部收起")
         _rewrap_all_messages()
+        _collect_and_save_from_window(win)
 
     refresh_btn.clicked.connect(do_refresh)
     edit_btn.clicked.connect(on_edit)
