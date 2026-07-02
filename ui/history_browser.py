@@ -178,8 +178,13 @@ def _collect_and_save_from_window(win):
         st["_scroll"] = tbl.verticalScrollBar().value()
         sel = tbl.selectedItems()
         sel_count = len(sel) if sel else 0
-        _dbg_warn(f"MayaVC: save sel_count={sel_count} rowCount={tbl.rowCount()}")
-        st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
+        if sel:
+            tag_item = tbl.item(tbl.row(sel[0]), 0)
+            st["_sel_tag"] = (tag_item.data(Qt.UserRole) if tag_item and tag_item.data(Qt.UserRole)
+                              else tag_item.text() if tag_item else "")
+        else:
+            st["_sel_tag"] = ""
+        _dbg_warn(f"MayaVC: save sel_count={sel_count} tag={st['_sel_tag']}")
         st["_collapsed"] = dict(_COLLAPSED_STATE)
         _save_panel_state(_saveable_state(st))
     except Exception as e:
