@@ -37,19 +37,13 @@ _COLLAPSED_STATE = {}  # tag -> True/False, in-memory; write to Maya optionVar
 
 
 def _load_collapsed():
+    """Clear in-memory collapsed state. Actual state is loaded from panel JSON."""
     global _COLLAPSED_STATE
     _COLLAPSED_STATE = {}
-    # Clear stale Maya optionVar to prevent old expanded state
-    try:
-        import maya.cmds as cmds
-        if cmds.optionVar(exists="MayaVC_collapsed"):
-            cmds.optionVar(remove="MayaVC_collapsed")
-    except Exception:
-        pass
 
 
 def _save_collapsed():
-    pass  # only in-memory, cleared on window close
+    """No-op. Collapsed state is persisted via _save_panel_state to JSON."""
 
 
 # ---------------------------------------------------------------------------
@@ -161,16 +155,17 @@ def show():
     if mw is None:
         return
 
-    # Close any existing history window first — save geometry before closing
+    # Close any existing history window first — save state and geometry before closing
     if hasattr(show, "_windows"):
         for w in show._windows[:]:
             try:
                 if _isValid(w):
-                    # Save position/size before closing (use plain ints, not saveGeometry)
+                    # Save panel state (sort, filter, scroll, selection, collapsed)
+                    _save_on_reopen(w)
+                    # Save position/size before closing
                     pos = w.pos()
                     sz = w.size()
                     _save_geometry(pos.x(), pos.y(), sz.width(), sz.height())
-                    _save_collapsed()
                     w.close()
             except Exception:
                 pass
@@ -1693,6 +1688,43 @@ def show():
     # Save panel state on close
     win._mayavc_state = state
     win._mayavc_table = table
+
+    def _collect_and_save():
+        """Collect current panel state from the window and persist to JSON."""
+        try:
+            if not _isValid(win):
+                return
+            st = win._mayavc_state
+            tbl = win._mayavc_table
+            # grab live scroll/selection before saving
+            st["_scroll"] = tbl.verticalScrollBar().value()
+            sel = tbl.selectedItems()
+            st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
+            # collapsed state (global dict)
+            st["_collapsed"] = dict(_COLLAPSED_STATE)
+            _save_panel_state(st)
+        except Exception:
+            pass
+
+    win.destroyed.connect(_collect_and_save)
+
+    def _save_on_reopen(win):
+        """Save panel state before closing an existing window (on re-open)."""
+        try:
+            if not _isValid(win):
+                return None
+            st = getattr(win, "_mayavc_state", None)
+            tbl = getattr(win, "_mayavc_table", None)
+            if st is None or tbl is None:
+                return None
+            st["_scroll"] = tbl.verticalScrollBar().value()
+            sel = tbl.selectedItems()
+            st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
+            st["_collapsed"] = dict(_COLLAPSED_STATE)
+            _save_panel_state(st)
+            return st
+        except Exception:
+            return None
 
     # stash reference so gc doesn't eat the window
     if not hasattr(show, "_windows"):
