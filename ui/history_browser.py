@@ -146,6 +146,15 @@ class _SortableItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+def _saveable_state(st):
+    """Return a dict with only JSON-safe keys from the panel state."""
+    keys = ("sort_dir_0", "sort_dir_1", "sort_dir_2", "sort_dir_3",
+            "_last_sort_section", "_record_order",
+            "filter_mode", "latest_only", "scenes_dir",
+            "_scroll", "_sel_tag", "_collapsed")
+    return {k: st[k] for k in keys if k in st}
+
+
 def _collect_and_save_from_window(win):
     """Collect current panel state from a window and persist to JSON."""
     try:
@@ -159,8 +168,9 @@ def _collect_and_save_from_window(win):
         sel = tbl.selectedItems()
         st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
         st["_collapsed"] = dict(_COLLAPSED_STATE)
-        _save_panel_state(st)
+        _save_panel_state(_saveable_state(st))
     except Exception:
+        pass
         pass
 
 
