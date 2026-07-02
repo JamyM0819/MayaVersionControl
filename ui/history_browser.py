@@ -239,11 +239,11 @@ def show():
     win.setObjectName("MayaVCHistoryWidget")
     win.setWindowTitle("MayaVersionControl")
 
-    # Restore previous geometry if available
-    geo = _load_geometry()
-    if geo:
-        x, y, w, h = geo
-        win.setGeometry(x, y, w, h)
+    # Restore previous geometry if available — set size before show(),
+    # position after show() to avoid cumulative window-frame offset.
+    _geo = _load_geometry()
+    if _geo:
+        win.resize(_geo[2], _geo[3])
     else:
         win.resize(900, 550)
 
@@ -1759,6 +1759,12 @@ def show():
     show._windows.append(win)
 
     win.show()
+
+    # Restore saved position (must be done after show() — window frame is
+    # only applied at show time, so setGeometry before show drifts each time)
+    if _geo:
+        win.move(_geo[0], _geo[1])
+
     import maya.cmds as _dbg
     _dbg.warning("MayaVC: History window shown.")
 
