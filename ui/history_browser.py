@@ -146,6 +146,24 @@ class _SortableItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+def _collect_and_save_from_window(win):
+    """Collect current panel state from a window and persist to JSON."""
+    try:
+        if not _isValid(win):
+            return
+        st = getattr(win, "_mayavc_state", None)
+        tbl = getattr(win, "_mayavc_table", None)
+        if st is None or tbl is None:
+            return
+        st["_scroll"] = tbl.verticalScrollBar().value()
+        sel = tbl.selectedItems()
+        st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
+        st["_collapsed"] = dict(_COLLAPSED_STATE)
+        _save_panel_state(st)
+    except Exception:
+        pass
+
+
 def show():
     """Show the history browser. Always creates a fresh window."""
     print("[MayaVC] LOADED — fix4 (2026-06-28)")
@@ -161,7 +179,7 @@ def show():
             try:
                 if _isValid(w):
                     # Save panel state (sort, filter, scroll, selection, collapsed)
-                    _save_on_reopen(w)
+                    _collect_and_save_from_window(w)
                     # Save position/size before closing
                     pos = w.pos()
                     sz = w.size()
@@ -1688,43 +1706,7 @@ def show():
     # Save panel state on close
     win._mayavc_state = state
     win._mayavc_table = table
-
-    def _collect_and_save():
-        """Collect current panel state from the window and persist to JSON."""
-        try:
-            if not _isValid(win):
-                return
-            st = win._mayavc_state
-            tbl = win._mayavc_table
-            # grab live scroll/selection before saving
-            st["_scroll"] = tbl.verticalScrollBar().value()
-            sel = tbl.selectedItems()
-            st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
-            # collapsed state (global dict)
-            st["_collapsed"] = dict(_COLLAPSED_STATE)
-            _save_panel_state(st)
-        except Exception:
-            pass
-
-    win.destroyed.connect(_collect_and_save)
-
-    def _save_on_reopen(win):
-        """Save panel state before closing an existing window (on re-open)."""
-        try:
-            if not _isValid(win):
-                return None
-            st = getattr(win, "_mayavc_state", None)
-            tbl = getattr(win, "_mayavc_table", None)
-            if st is None or tbl is None:
-                return None
-            st["_scroll"] = tbl.verticalScrollBar().value()
-            sel = tbl.selectedItems()
-            st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
-            st["_collapsed"] = dict(_COLLAPSED_STATE)
-            _save_panel_state(st)
-            return st
-        except Exception:
-            return None
+    win.destroyed.connect(lambda _win=win: _collect_and_save_from_window(_win))
 
     # stash reference so gc doesn't eat the window
     if not hasattr(show, "_windows"):
