@@ -1748,10 +1748,17 @@ def show():
     # Track scroll
     table.verticalScrollBar().valueChanged.connect(lambda _v: _schedule_geo_save())
 
-    # Track resize/move via event filter
+    # Track resize/move via event filter (compatible with PySide2/PySide6)
+    try:
+        _EVT_MOVE = QEvent.Type.Move
+        _EVT_RESIZE = QEvent.Type.Resize
+    except AttributeError:
+        _EVT_MOVE = getattr(QEvent, "Move", 13)
+        _EVT_RESIZE = getattr(QEvent, "Resize", 14)
+
     class _GeoFilter(QObject):
         def eventFilter(self, obj, event):
-            if event.type() in (QEvent.Move, QEvent.Resize):
+            if event.type() in (_EVT_MOVE, _EVT_RESIZE):
                 _schedule_geo_save()
             return False
     _geo_filter = _GeoFilter()
