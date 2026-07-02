@@ -54,4 +54,6 @@ test/New_Project/
 .reasonix/
 AGENTS.md
 docs/
-reasonix.tomlMayaVC_panel_state.json
+reasonix.toml
+
+MayaVC_panel_state.json
