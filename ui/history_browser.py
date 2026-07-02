@@ -5,6 +5,7 @@ Simple QWidget with Qt.Window flag, parented to Maya main window.
 
 import os
 import re
+import json
 import subprocess
 import datetime
 import textwrap as _textwrap
@@ -1701,3 +1702,31 @@ def show():
     win.show()
     import maya.cmds as _dbg
     _dbg.warning("MayaVC: History window shown.")
+
+
+# ---- Panel State Persistence (JSON file) ----
+
+def _panel_state_path():
+    """Path to the JSON file for panel state persistence."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "MayaVC_panel_state.json")
+
+
+def _load_panel_state():
+    """Load panel state from JSON file."""
+    path = _panel_state_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_panel_state(state_dict):
+    """Save panel state to JSON file."""
+    path = _panel_state_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state_dict, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[MayaVC] Failed to save panel state: {e}")
