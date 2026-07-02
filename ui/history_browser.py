@@ -1026,6 +1026,9 @@ def show():
             state["_record_order"] = [_tag_for_row(i) for i in range(table.rowCount())]
             # Fix row heights after reorder
             QTimer.singleShot(0, _rewrap_all_messages)
+            # Persist sort state
+            if state.get("_initial_load_done"):
+                _collect_and_save_from_window(win)
         visible = state.get("visible")
         cur_tag = state.get("cur_tag")
         if visible:
