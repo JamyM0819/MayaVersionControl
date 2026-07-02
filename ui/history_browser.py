@@ -146,15 +146,6 @@ class _SortableItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
-def _dbg_warn(msg):
-    """Debug warning via Maya or print."""
-    try:
-        import maya.cmds as _cmds
-        _cmds.warning(msg)
-    except Exception:
-        print(msg)
-
-
 def _saveable_state(st):
     """Return a dict with only JSON-safe keys from the panel state."""
     keys = ("sort_dir_0", "sort_dir_1", "sort_dir_2", "sort_dir_3",
@@ -200,18 +191,14 @@ def show():
     if mw is None:
         return
 
-    # Close any existing history window first — save state and geometry before closing
+    # If a window is already open, just bring it to the front
     if hasattr(show, "_windows"):
         for w in show._windows[:]:
             try:
-                if _isValid(w):
-                    # Save panel state (sort, filter, scroll, selection, collapsed)
-                    _collect_and_save_from_window(w)
-                    # Save position/size before closing
-                    pos = w.pos()
-                    sz = w.size()
-                    _save_geometry(pos.x(), pos.y(), sz.width(), sz.height())
-                    w.close()
+                if _isValid(w) and w.isVisible():
+                    w.raise_()
+                    w.activateWindow()
+                    return
             except Exception:
                 pass
         show._windows.clear()
