@@ -1113,6 +1113,11 @@ def show():
         # Persist selection on every change
         if state.get("_initial_load_done"):
             _collect_and_save_from_window(win)
+            try:
+                import maya.cmds as _dbg_sel2
+                _dbg_sel2.warning("MayaVC: saved sel=" + str(state.get("_sel_tag", "")))
+            except Exception:
+                pass
 
     def on_edit():
         if state["edit_mode"]:
