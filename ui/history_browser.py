@@ -86,32 +86,6 @@ def _add_recent_project(path):
 # Persistent window geometry (survives Maya sessions)
 # ---------------------------------------------------------------------------
 
-def _load_geometry():
-    """Restore previous window position/size from Maya optionVars.
-    Returns (x, y, w, h) or None."""
-    try:
-        import maya.cmds as cmds
-        x = cmds.optionVar(q="MayaVC_win_x")
-        y = cmds.optionVar(q="MayaVC_win_y")
-        w = cmds.optionVar(q="MayaVC_win_w")
-        h = cmds.optionVar(q="MayaVC_win_h")
-        if all(v is not None for v in (x, y, w, h)):
-            return (int(x), int(y), int(w), int(h))
-    except Exception:
-        pass
-    return None
-
-
-def _save_geometry(x, y, w, h):
-    """Persist window position/size to Maya optionVars as 4 plain ints."""
-    try:
-        import maya.cmds as cmds
-        cmds.optionVar(iv=("MayaVC_win_x", int(x)))
-        cmds.optionVar(iv=("MayaVC_win_y", int(y)))
-        cmds.optionVar(iv=("MayaVC_win_w", int(w)))
-        cmds.optionVar(iv=("MayaVC_win_h", int(h)))
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +125,8 @@ def _saveable_state(st):
     keys = ("sort_dir_0", "sort_dir_1", "sort_dir_2", "sort_dir_3",
             "_last_sort_section", "_record_order",
             "filter_mode", "latest_only", "scenes_dir",
-            "_scroll", "_sel_tag", "_collapsed")
+            "_scroll", "_sel_tag", "_collapsed",
+            "_geo_x", "_geo_y", "_geo_w", "_geo_h")
     return {k: st[k] for k in keys if k in st}
 
 
@@ -159,33 +134,36 @@ def _collect_and_save_from_window(win):
     """Collect current panel state from a window and persist to JSON."""
     try:
         if not _isValid(win):
-            _dbg_warn("MayaVC: save skipped, win invalid")
             return
         st = getattr(win, "_mayavc_state", None)
         tbl = getattr(win, "_mayavc_table", None)
         if st is None or tbl is None:
-            _dbg_warn("MayaVC: save skipped, st or tbl None")
             return
         st["_scroll"] = tbl.verticalScrollBar().value()
+        st["_geo_x"] = win.pos().x()
+        st["_geo_y"] = win.pos().y()
+        st["_geo_w"] = win.size().width()
+        st["_geo_h"] = win.size().height()
         sel = tbl.selectedItems()
-        sel_count = len(sel) if sel else 0
         if sel:
             tag_item = tbl.item(tbl.row(sel[0]), 0)
             st["_sel_tag"] = (tag_item.data(Qt.UserRole) if tag_item and tag_item.data(Qt.UserRole)
                               else tag_item.text() if tag_item else "")
         else:
             st["_sel_tag"] = ""
-        _dbg_warn(f"MayaVC: save sel_count={sel_count} tag={st['_sel_tag']}")
         st["_collapsed"] = dict(_COLLAPSED_STATE)
         _save_panel_state(_saveable_state(st))
-    except Exception as e:
-        _dbg_warn(f"MayaVC: save exception: {e}")
+    except Exception:
+        pass
 
 
 def show():
     """Show the history browser. Always creates a fresh window."""
     print("[MayaVC] LOADED — fix4 (2026-06-28)")
     _load_collapsed()
+
+    # Load saved state early to get window geometry
+    _saved_early = _load_panel_state()
 
     mw = _get_maya_window()
     if mw is None:
@@ -226,11 +204,14 @@ def show():
     win.setObjectName("MayaVCHistoryWidget")
     win.setWindowTitle("MayaVersionControl")
 
-    # Restore previous geometry if available — set size before show(),
+    # Restore previous geometry from JSON — size before show(),
     # position after show() to avoid cumulative window-frame offset.
-    _geo = _load_geometry()
-    if _geo:
-        win.resize(_geo[2], _geo[3])
+    gx = _saved_early.get("_geo_x")
+    gy = _saved_early.get("_geo_y")
+    gw = _saved_early.get("_geo_w")
+    gh = _saved_early.get("_geo_h")
+    if all(v is not None for v in (gx, gy, gw, gh)):
+        win.resize(int(gw), int(gh))
     else:
         win.resize(900, 550)
 
@@ -1747,10 +1728,9 @@ def show():
 
     win.show()
 
-    # Restore saved position (must be done after show() — window frame is
-    # only applied at show time, so setGeometry before show drifts each time)
-    if _geo:
-        win.move(_geo[0], _geo[1])
+    # Restore saved position from JSON (must be after show)
+    if all(v is not None for v in (gx, gy, gw, gh)):
+        win.move(int(gx), int(gy))
 
     import maya.cmds as _dbg
     _dbg.warning("MayaVC: History window shown.")
