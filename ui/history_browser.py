@@ -1693,7 +1693,6 @@ def show():
     folder_btn.clicked.connect(_on_browse_project)
 
     do_refresh()
-    state["_initial_load_done"] = True
 
     # ---- Restore panel state from previous session ----
     sv = state.get("_saved", {})
@@ -1725,6 +1724,10 @@ def show():
                 table.selectRow(i)
                 table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
                 break
+
+    # Enable live save ONLY after full state is restored
+    state["_initial_load_done"] = True
+
     # Save panel state on close
     win._mayavc_state = state
     win._mayavc_table = table
