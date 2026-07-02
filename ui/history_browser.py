@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QToolButton, QMenu, QLineEdit, QWidgetAction, QFileDialog,
     QDialog, QTextEdit, QStyledItemDelegate,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QObject, QEvent
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QStyle
 from shiboken6 import isValid as _isValid
@@ -1733,6 +1733,32 @@ def show():
     # Restore saved position from JSON (must be after show)
     if all(v is not None for v in (gx, gy, gw, gh)):
         win.move(int(gx), int(gy))
+
+    # ---- Live geometry & scroll tracking ----
+    # Debounce save to avoid excessive disk writes during drag/resize
+    _geo_save_timer = QTimer(win)
+    _geo_save_timer.setSingleShot(True)
+    _geo_save_timer.setInterval(300)  # save ~300ms after last move/resize/scroll
+    _geo_save_timer.timeout.connect(lambda: _collect_and_save_from_window(win))
+
+    def _schedule_geo_save():
+        if state.get("_initial_load_done"):
+            _geo_save_timer.start()
+
+    # Track scroll
+    table.verticalScrollBar().valueChanged.connect(lambda _v: _schedule_geo_save())
+
+    # Track resize/move via event filter
+    class _GeoFilter(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() in (QEvent.Move, QEvent.Resize):
+                _schedule_geo_save()
+            return False
+    _geo_filter = _GeoFilter()
+    win.installEventFilter(_geo_filter)
+    # Keep alive
+    win._geo_filter = _geo_filter
+    win._geo_save_timer = _geo_save_timer
 
     import maya.cmds as _dbg
     _dbg.warning("MayaVC: History window shown.")
