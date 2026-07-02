@@ -146,6 +146,15 @@ class _SortableItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+def _dbg_warn(msg):
+    """Debug warning via Maya or print."""
+    try:
+        import maya.cmds as _cmds
+        _cmds.warning(msg)
+    except Exception:
+        print(msg)
+
+
 def _saveable_state(st):
     """Return a dict with only JSON-safe keys from the panel state."""
     keys = ("sort_dir_0", "sort_dir_1", "sort_dir_2", "sort_dir_3",
@@ -159,19 +168,22 @@ def _collect_and_save_from_window(win):
     """Collect current panel state from a window and persist to JSON."""
     try:
         if not _isValid(win):
+            _dbg_warn("MayaVC: save skipped, win invalid")
             return
         st = getattr(win, "_mayavc_state", None)
         tbl = getattr(win, "_mayavc_table", None)
         if st is None or tbl is None:
+            _dbg_warn("MayaVC: save skipped, st or tbl None")
             return
         st["_scroll"] = tbl.verticalScrollBar().value()
         sel = tbl.selectedItems()
+        sel_count = len(sel) if sel else 0
+        _dbg_warn(f"MayaVC: save sel_count={sel_count} rowCount={tbl.rowCount()}")
         st["_sel_tag"] = _tag_for_row(tbl.row(sel[0])) if sel else ""
         st["_collapsed"] = dict(_COLLAPSED_STATE)
         _save_panel_state(_saveable_state(st))
-    except Exception:
-        pass
-        pass
+    except Exception as e:
+        _dbg_warn(f"MayaVC: save exception: {e}")
 
 
 def show():
@@ -1113,11 +1125,6 @@ def show():
         # Persist selection on every change
         if state.get("_initial_load_done"):
             _collect_and_save_from_window(win)
-            try:
-                import maya.cmds as _dbg_sel2
-                _dbg_sel2.warning("MayaVC: saved sel=" + str(state.get("_sel_tag", "")))
-            except Exception:
-                pass
 
     def on_edit():
         if state["edit_mode"]:
