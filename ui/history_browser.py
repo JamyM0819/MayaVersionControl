@@ -757,6 +757,10 @@ def show():
         # Deferred rewrap: column width may not be final during initial layout.
         QTimer.singleShot(0, _rewrap_all_messages)
 
+        # Persist panel state on every user-triggered refresh
+        if state.get("_initial_load_done"):
+            _collect_and_save_from_window(win)
+
     def _msg_col_chars():
         """Return chars that fit in the Message column at current width."""
         fm = table.fontMetrics()
@@ -1682,6 +1686,7 @@ def show():
     folder_btn.clicked.connect(_on_browse_project)
 
     do_refresh()
+    state["_initial_load_done"] = True
 
     # ---- Restore panel state from previous session ----
     sv = state.get("_saved", {})
