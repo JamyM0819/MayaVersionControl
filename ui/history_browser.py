@@ -175,8 +175,17 @@ def show():
                 pass
         show._windows.clear()
 
-    # Scenes dir — try cached first, then detect from Maya
-    d = getattr(show, "_last_scenes_dir", "") or ""
+    # Scenes dir — always use current Maya scene dir, fallback to cached
+    d = ""
+    try:
+        from maya import cmds
+        cur = cmds.file(query=True, sceneName=True)
+        if cur:
+            d = os.path.dirname(cur)
+    except Exception:
+        pass
+    if not d or not os.path.isdir(d):
+        d = getattr(show, "_last_scenes_dir", "") or ""
     if not d or not os.path.isdir(d):
         try:
             d = get_scenes_dir()
@@ -495,6 +504,24 @@ def show():
 
     state = {"records": [], "scenes_dir": d, "filter_mode": "all",
              "latest_only": False, "edit_mode": False, "cur_tag": None}
+
+    # Restore saved panel state (sort, filter, collapse, etc.)
+    saved = _load_panel_state()
+    for k in ("sort_dir_0", "sort_dir_1", "sort_dir_2", "sort_dir_3",
+              "_last_sort_section", "_record_order",
+              "filter_mode", "latest_only"):
+        if k in saved:
+            state[k] = saved[k]
+    if "_collapsed" in saved:
+        _COLLAPSED_STATE.clear()
+        _COLLAPSED_STATE.update(saved["_collapsed"])
+    saved_dir = saved.get("scenes_dir", "")
+    if saved_dir and os.path.isdir(saved_dir):
+        state["scenes_dir"] = saved_dir
+    else:
+        saved["scenes_dir"] = d
+    # Stash for later restore (scroll, selection, etc.)
+    state["_saved"] = saved
 
     _update_project_button_text()
 
@@ -1631,6 +1658,40 @@ def show():
     folder_btn.clicked.connect(_on_browse_project)
 
     do_refresh()
+
+    # ---- Restore panel state from previous session ----
+    sv = state.get("_saved", {})
+    # Sort indicator + header
+    ls = state.get("_last_sort_section")
+    if ls is not None and ls >= 0:
+        dir_key = f"sort_dir_{ls}"
+        order = (Qt.DescendingOrder if state.get(dir_key, False)
+                 else Qt.AscendingOrder)
+        table.horizontalHeader().setSortIndicator(ls, order)
+        _update_sort_header(ls, order)
+    # Segment button styles
+    if state.get("latest_only"):
+        latest_all_btn.setStyleSheet(dim_style)
+        latest_new_btn.setStyleSheet(active_style)
+    if state.get("filter_mode") == "current":
+        filter_all_btn.setStyleSheet(dim_style)
+        filter_cur_btn.setStyleSheet(active_style)
+    # Scroll position
+    if "_scroll" in sv:
+        QTimer.singleShot(10, lambda v=sv["_scroll"]:
+                          table.verticalScrollBar().setValue(v))
+    # Selected row
+    if sv.get("_sel_tag"):
+        sel_tag = sv["_sel_tag"]
+        for i in range(table.rowCount()):
+            tag_item = table.item(i, 0)
+            if tag_item and (tag_item.data(Qt.UserRole) or tag_item.text()) == sel_tag:
+                table.selectRow(i)
+                table.scrollToItem(table.item(i, 0), QTableWidget.PositionAtCenter)
+                break
+    # Save panel state on close
+    win._mayavc_state = state
+    win._mayavc_table = table
 
     # stash reference so gc doesn't eat the window
     if not hasattr(show, "_windows"):
